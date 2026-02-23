@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block title %}Level 10 - 综合防护 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 10: 综合防护</h2>
+    <span class="difficulty hard">困难</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡使用了多重防护机制，是真正的挑战！</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+        <div class="form-group">
+            <label for="file">选择文件 (必须是有效的图片文件):</label>
+            <input type="file" name="file" id="file" accept="image/*" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>这一关使用了以下防护措施：</li>
+        <li>✓ 白名单验证（只允许图片）</li>
+        <li>✓ Content-Type验证</li>
+        <li>✓ 魔术字节验证</li>
+        <li>✓ 文件重命名</li>
+        <li>尝试使用真正的Polyglot文件绕过！</li>
+    </ul>
+</div>
+
+<div class="card">
+    <h3>🎯 挑战目标</h3>
+    <p>如果你能成功绕过这一关的所有防护并执行代码，恭喜你！你已经掌握了高级的文件上传绕过技术！</p>
+</div>
+{% endblock %}

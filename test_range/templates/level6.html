@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}Level 6 - 魔术字节绕过 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 6: 魔术字节绕过</h2>
+    <span class="difficulty medium">中等</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡验证文件的魔术字节（文件签名），尝试绕过它！</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+        <div class="form-group">
+            <label for="file">选择文件 (必须是有效的图片):</label>
+            <input type="file" name="file" id="file" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>魔术字节是文件开头的几个字节，用于标识文件类型</li>
+        <li>GIF: <code>GIF89a</code> 或 <code>GIF87a</code></li>
+        <li>JPEG: <code>\\xFF\\xD8\\xFF</code></li>
+        <li>PNG: <code>\\x89PNG</code></li>
+        <li>创建Polyglot文件: 在PHP代码前添加图片的魔术字节</li>
+    </ul>
+</div>
+{% endblock %}

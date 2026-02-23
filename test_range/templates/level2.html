@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Level 2 - 前端验证绕过 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 2: 前端验证绕过</h2>
+    <span class="difficulty easy">简单</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡只有前端JavaScript验证，尝试绕过它！</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form" id="uploadForm">
+        <div class="form-group">
+            <label for="file">选择文件 (只允许图片):</label>
+            <input type="file" name="file" id="file" accept="image/*" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>前端验证可以通过多种方式绕过</li>
+        <li>尝试使用Burp Suite拦截并修改请求</li>
+        <li>或者在浏览器控制台中修改验证逻辑</li>
+    </ul>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // 前端验证
+    document.getElementById('uploadForm').addEventListener('submit', function(e) {
+        var fileInput = document.getElementById('file');
+        var file = fileInput.files[0];
+        
+        if (file) {
+            var allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
+            if (!allowedTypes.includes(file.type)) {
+                alert('只允许上传图片文件!');
+                e.preventDefault();
+            }
+        }
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,66 @@
+# 编译和构建文件
+build/
+dist/
+*.egg-info/
+*.spec
+
+# 字节码和缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# 虚拟环境
+venv/
+ENV/
+env/
+*.venv
+
+# IDE编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 测试输出
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 压缩包
+*.zip
+*.tar
+*.tar.gz
+*.rar
+
+# 日志文件
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.temp
+.temp/
+
+# 生成的文件
+*.exe
+*.dll
+*.so
+dist/
+
+# 上传的文件
+test_range/uploads/*
+!test_range/uploads/.gitkeep
+
+# 代理证书（敏感）
+**/*.p12
+**/*.pfx
+**/*-cert.*
+
+# 配置敏感信息（如有的话）
+.env
+.env.local
+config.local.py

@@ -1,0 +1,219 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+HTTP语法高亮 - 为请求和响应添加颜色渲染
+"""
+
+from PySide6.QtCore import Qt, QRegularExpression, QRegularExpressionMatchIterator
+from PySide6.QtGui import (
+    QColor, QTextCharFormat, QFont, 
+    QSyntaxHighlighter
+)
+
+
+class HTTPHighlighter(QSyntaxHighlighter):
+    """HTTP请求/响应语法高亮器"""
+    
+    def __init__(self, parent=None, is_request=True):
+        super().__init__(parent)
+        self.is_request = is_request
+        self.highlighting_rules = []
+        
+        # 定义颜色
+        self.colors = {
+            'method': QColor("#ff79c6"),      # 粉色 - HTTP方法
+            'url': QColor("#8be9fd"),          # 青色 - URL
+            'protocol': QColor("#bd93f9"),     # 紫色 - HTTP协议版本
+            'header_name': QColor("#50fa7b"),  # 绿色 - 请求头名
+            'header_value': QColor("#f8f8f2"), # 白色 - 请求头值
+            'status_code': QColor("#ffb86c"),  # 橙色 - 状态码
+            'status_text': QColor("#f8f8f2"),  # 白色 - 状态文本
+            'boundary': QColor("#ff79c6"),     # 粉色 - boundary
+            'filename': QColor("#f1fa8c"),     # 黄色 - 文件名
+            'content_type': QColor("#8be9fd"), # 青色 - Content-Type
+            'php_code': QColor("#ff5555"),     # 红色 - PHP代码
+            'html_tag': QColor("#ff79c6"),     # 粉色 - HTML标签
+            'html_attr': QColor("#50fa7b"),    # 绿色 - HTML属性
+            'html_value': QColor("#f1fa8c"),   # 黄色 - HTML属性值
+            'comment': QColor("#6272a4"),      # 灰色 - 注释
+            'number': QColor("#bd93f9"),       # 紫色 - 数字
+            'string': QColor("#f1fa8c"),       # 黄色 - 字符串
+        }
+        
+        self._setup_rules()
+    
+    def _setup_rules(self):
+        """设置高亮规则"""
+        
+        # HTTP方法 (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+        method_format = QTextCharFormat()
+        method_format.setForeground(self.colors['method'])
+        method_format.setFontWeight(QFont.Bold)
+        self.highlighting_rules.append(
+            (QRegularExpression(r"\b(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\b"), method_format)
+        )
+        
+        # HTTP协议版本
+        protocol_format = QTextCharFormat()
+        protocol_format.setForeground(self.colors['protocol'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"HTTP/\d\.\d"), protocol_format)
+        )
+        
+        # 状态码 (3位数字)
+        status_format = QTextCharFormat()
+        status_format.setForeground(self.colors['status_code'])
+        status_format.setFontWeight(QFont.Bold)
+        self.highlighting_rules.append(
+            (QRegularExpression(r"\b\d{3}\b"), status_format)
+        )
+        
+        # 请求头名
+        header_name_format = QTextCharFormat()
+        header_name_format.setForeground(self.colors['header_name'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"^[A-Za-z0-9\-]+(?=:)"), header_name_format)
+        )
+        
+        # Boundary
+        boundary_format = QTextCharFormat()
+        boundary_format.setForeground(self.colors['boundary'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"----[-\w]+"), boundary_format)
+        )
+        
+        # Content-Disposition中的filename
+        filename_format = QTextCharFormat()
+        filename_format.setForeground(self.colors['filename'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r'filename="[^"]*"'), filename_format)
+        )
+        
+        # Content-Type
+        content_type_format = QTextCharFormat()
+        content_type_format.setForeground(self.colors['content_type'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"Content-Type:\s*[^;\n]+"), content_type_format)
+        )
+        
+        # PHP代码
+        php_format = QTextCharFormat()
+        php_format.setForeground(self.colors['php_code'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"<\?php.*?\?>"), php_format)
+        )
+        
+        # HTML标签
+        html_tag_format = QTextCharFormat()
+        html_tag_format.setForeground(self.colors['html_tag'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"</?[a-zA-Z][^>]*>"), html_tag_format)
+        )
+        
+        # HTML属性
+        html_attr_format = QTextCharFormat()
+        html_attr_format.setForeground(self.colors['html_attr'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r'\s[a-zA-Z\-]+(?==)'), html_attr_format)
+        )
+        
+        # HTML属性值
+        html_value_format = QTextCharFormat()
+        html_value_format.setForeground(self.colors['html_value'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r'"[^"]*"'), html_value_format)
+        )
+        
+        # URL (http://...)
+        url_format = QTextCharFormat()
+        url_format.setForeground(self.colors['url'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"https?://[^\s\"<>]+"), url_format)
+        )
+        
+        # 数字
+        number_format = QTextCharFormat()
+        number_format.setForeground(self.colors['number'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r"\b\d+\b"), number_format)
+        )
+        
+        # 注释
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(self.colors['comment'])
+        comment_format.setFontItalic(True)
+        self.highlighting_rules.append(
+            (QRegularExpression(r"#.*$"), comment_format)
+        )
+    
+    def highlightBlock(self, text):
+        """高亮文本块"""
+        for pattern, format in self.highlighting_rules:
+            iterator = pattern.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), format)
+
+
+class JSONHighlighter(QSyntaxHighlighter):
+    """JSON语法高亮器"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.highlighting_rules = []
+        
+        self.colors = {
+            'key': QColor("#50fa7b"),      # 绿色 - 键
+            'string': QColor("#f1fa8c"),   # 黄色 - 字符串
+            'number': QColor("#bd93f9"),   # 紫色 - 数字
+            'boolean': QColor("#ff79c6"),  # 粉色 - 布尔值
+            'null': QColor("#6272a4"),     # 灰色 - null
+        }
+        
+        self._setup_rules()
+    
+    def _setup_rules(self):
+        """设置高亮规则"""
+        
+        # JSON键
+        key_format = QTextCharFormat()
+        key_format.setForeground(self.colors['key'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r'"[^"]*"(?=\s*:)'), key_format)
+        )
+        
+        # 字符串值
+        string_format = QTextCharFormat()
+        string_format.setForeground(self.colors['string'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r':\s*"[^"]*"'), string_format)
+        )
+        
+        # 数字
+        number_format = QTextCharFormat()
+        number_format.setForeground(self.colors['number'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r':\s*\-?\d+\.?\d*'), number_format)
+        )
+        
+        # 布尔值
+        bool_format = QTextCharFormat()
+        bool_format.setForeground(self.colors['boolean'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r'\b(true|false)\b'), bool_format)
+        )
+        
+        # null
+        null_format = QTextCharFormat()
+        null_format.setForeground(self.colors['null'])
+        self.highlighting_rules.append(
+            (QRegularExpression(r'\bnull\b'), null_format)
+        )
+    
+    def highlightBlock(self, text):
+        """高亮文本块"""
+        for pattern, format in self.highlighting_rules:
+            iterator = pattern.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), format)

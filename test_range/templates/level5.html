@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Level 5 - 白名单测试 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 5: 白名单测试</h2>
+    <span class="difficulty medium">中等</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡使用白名单验证，只允许特定的文件类型。</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+        <div class="form-group">
+            <label for="file">选择文件 (只允许: jpg, jpeg, png, gif, pdf, doc, docx):</label>
+            <input type="file" name="file" id="file" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>白名单通常比黑名单更安全</li>
+        <li>尝试寻找白名单中的可执行文件类型</li>
+        <li>某些服务器配置可能允许执行.pdf或.doc文件</li>
+        <li>尝试使用Polyglot文件</li>
+    </ul>
+</div>
+{% endblock %}

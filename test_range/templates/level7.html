@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Level 7 - 大小写绕过 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 7: 大小写绕过</h2>
+    <span class="difficulty easy">简单</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡只检查小写的.php，尝试使用大小写变体！</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+        <div class="form-group">
+            <label for="file">选择文件 (不允许.php):</label>
+            <input type="file" name="file" id="file" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>某些服务器对扩展名大小写不敏感</li>
+        <li>尝试: <code>.PHP</code>, <code>.Php</code>, <code>.pHp</code></li>
+        <li>Windows服务器通常不区分大小写</li>
+        <li>Linux服务器区分大小写，但验证代码可能不区分</li>
+    </ul>
+</div>
+{% endblock %}

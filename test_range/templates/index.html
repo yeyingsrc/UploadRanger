@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="card">
+    <h2>📚 测试关卡</h2>
+    <p>选择下方的关卡进行文件上传漏洞测试练习。每个关卡都有不同的防护机制，尝试绕过它们！</p>
+    
+    <div class="level-grid">
+        {% for level in levels %}
+        <div class="level-card">
+            <h3>Level {{ level.id }}: {{ level.name }}</h3>
+            <span class="difficulty {{ level.difficulty | lower }}">{{ level.difficulty }}</span>
+            <p>{{ level.description }}</p>
+            <a href="/level{{ level.id }}" class="btn">开始挑战</a>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card">
+    <h2>📖 使用说明</h2>
+    <div class="info-box">
+        <h4>测试目标</h4>
+        <ul>
+            <li>尝试上传各种文件类型（PHP, ASP, JSP等）</li>
+            <li>绕过前端和后端的安全验证</li>
+            <li>成功上传并执行WebShell</li>
+        </ul>
+    </div>
+    
+    <div class="info-box">
+        <h4>常用绕过技术</h4>
+        <ul>
+            <li><strong>前端绕过:</strong> 禁用JavaScript或拦截修改请求</li>
+            <li><strong>MIME欺骗:</strong> 修改Content-Type头</li>
+            <li><strong>扩展名绕过:</strong> 使用大小写变体、双扩展名、空字节等</li>
+            <li><strong>魔术字节:</strong> 在文件开头添加图片签名</li>
+            <li><strong>Polyglot:</strong> 创建既是图片又是脚本的文件</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

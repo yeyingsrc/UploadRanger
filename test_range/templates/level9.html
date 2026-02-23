@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Level 9 - 路径遍历测试 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 9: 路径遍历测试</h2>
+    <span class="difficulty medium">中等</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡尝试防止路径遍历攻击，但可能不够完善！</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+        <div class="form-group">
+            <label for="file">选择文件:</label>
+            <input type="file" name="file" id="file" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>路径遍历: <code>../../../var/www/html/shell.php</code></li>
+        <li>URL编码: <code>..%2f..%2f..%2fshell.php</code></li>
+        <li>双点号: <code>....//....//shell.php</code></li>
+        <li>空字节截断 (旧版本PHP): <code>shell.php%00.jpg</code></li>
+    </ul>
+</div>
+{% endblock %}

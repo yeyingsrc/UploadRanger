@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Level 4 - 黑名单绕过 | UploadRanger{% endblock %}
+
+{% block content %}
+<div class="nav">
+    <a href="/">← 返回首页</a>
+</div>
+
+<div class="card">
+    <h2>Level 4: 黑名单绕过</h2>
+    <span class="difficulty medium">中等</span>
+    
+    <div class="info-box">
+        <h4>关卡说明</h4>
+        <p>这个关卡使用黑名单验证，但黑名单可能不完整！</p>
+    </div>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert {{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+    
+    <form method="post" enctype="multipart/form-data" class="upload-form">
+        <div class="form-group">
+            <label for="file">选择文件:</label>
+            <input type="file" name="file" id="file" required>
+        </div>
+        <button type="submit" class="btn">上传文件</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>💡 提示</h3>
+    <ul>
+        <li>黑名单可能遗漏了一些危险的扩展名</li>
+        <li>PHP有很多等价扩展名: .php, .php2, .php3, .php4, .php5, .phtml</li>
+        <li>尝试使用大小写变体: .PHP, .Php</li>
+        <li>双扩展名可能有效: .php.jpg</li>
+    </ul>
+</div>
+{% endblock %}
