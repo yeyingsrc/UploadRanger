@@ -155,6 +155,106 @@ class HTTPHighlighter(QSyntaxHighlighter):
                 self.setFormat(match.capturedStart(), match.capturedLength(), format)
 
 
+class WebShellHighlighter(QSyntaxHighlighter):
+    """WebShell语法高亮器 - 支持PHP, ASP, JSP, Python, Perl"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.highlighting_rules = []
+        
+        # 定义颜色
+        self.colors = {
+            'keyword': QColor("#ff79c6"),      # 粉色 - 关键字
+            'string': QColor("#f1fa8c"),       # 黄色 - 字符串
+            'comment': QColor("#6272a4"),      # 灰色 - 注释
+            'number': QColor("#bd93f9"),       # 紫色 - 数字
+            'tag': QColor("#ff5555"),          # 红色 - 标签 <?php, <%, %>
+            'variable': QColor("#8be9fd"),     # 青色 - 变量
+            'function': QColor("#50fa7b"),     # 绿色 - 函数
+        }
+        
+        self._setup_rules()
+    
+    def _setup_rules(self):
+        """设置高亮规则"""
+        
+        # 1. 关键字 (多语言混合)
+        keywords = [
+            # PHP
+            "echo", "eval", "system", "exec", "passthru", "shell_exec", "assert", 
+            "if", "else", "elseif", "while", "for", "foreach", "return", "function", 
+            "class", "new", "try", "catch", "die", "exit", "isset", "empty",
+            # Python
+            "import", "from", "def", "print", "try", "except", "with", "as", 
+            "if", "elif", "else", "return", "True", "False", "None",
+            # JSP/Java
+            "import", "page", "public", "private", "protected", "void", "String", 
+            "int", "boolean", "new", "if", "else", "try", "catch", "return",
+            # ASP/VBScript
+            "Dim", "Set", "If", "Then", "Else", "End", "Function", "Sub", 
+            "Response", "Request", "Server", "CreateObject",
+            # Perl
+            "use", "my", "print", "if", "else", "sub"
+        ]
+        
+        keyword_format = QTextCharFormat()
+        keyword_format.setForeground(self.colors['keyword'])
+        keyword_format.setFontWeight(QFont.Bold)
+        
+        for word in keywords:
+            pattern = QRegularExpression(r"\b" + word + r"\b")
+            pattern.setPatternOptions(QRegularExpression.CaseInsensitiveOption)
+            self.highlighting_rules.append((pattern, keyword_format))
+            
+        # 2. 标签
+        tag_format = QTextCharFormat()
+        tag_format.setForeground(self.colors['tag'])
+        tag_format.setFontWeight(QFont.Bold)
+        self.highlighting_rules.append((QRegularExpression(r"<\?php"), tag_format))
+        self.highlighting_rules.append((QRegularExpression(r"\?>"), tag_format))
+        self.highlighting_rules.append((QRegularExpression(r"<%"), tag_format))
+        self.highlighting_rules.append((QRegularExpression(r"%>"), tag_format))
+        self.highlighting_rules.append((QRegularExpression(r"<%@"), tag_format))
+        
+        # 3. 字符串 ("..." 和 '...')
+        string_format = QTextCharFormat()
+        string_format.setForeground(self.colors['string'])
+        self.highlighting_rules.append((QRegularExpression(r"\".*?\""), string_format))
+        self.highlighting_rules.append((QRegularExpression(r"'.*?'"), string_format))
+        
+        # 4. 注释 (#, //, --, /*...*/)
+        comment_format = QTextCharFormat()
+        comment_format.setForeground(self.colors['comment'])
+        comment_format.setFontItalic(True)
+        self.highlighting_rules.append((QRegularExpression(r"#[^\n]*"), comment_format))
+        self.highlighting_rules.append((QRegularExpression(r"//[^\n]*"), comment_format))
+        # ASP注释 '
+        self.highlighting_rules.append((QRegularExpression(r"'[^\n]*"), comment_format))
+        
+        # 5. 变量 ($var, @var)
+        variable_format = QTextCharFormat()
+        variable_format.setForeground(self.colors['variable'])
+        self.highlighting_rules.append((QRegularExpression(r"[\$@%][a-zA-Z_]\w*"), variable_format))
+        
+        # 6. 函数调用 (func(...))
+        function_format = QTextCharFormat()
+        function_format.setForeground(self.colors['function'])
+        self.highlighting_rules.append((QRegularExpression(r"\b[a-zA-Z_]\w*(?=\()"), function_format))
+        
+        # 7. 数字
+        number_format = QTextCharFormat()
+        number_format.setForeground(self.colors['number'])
+        self.highlighting_rules.append((QRegularExpression(r"\b\d+\b"), number_format))
+
+    def highlightBlock(self, text):
+        """高亮文本块"""
+        for pattern, format in self.highlighting_rules:
+            iterator = pattern.globalMatch(text)
+            while iterator.hasNext():
+                match = iterator.next()
+                self.setFormat(match.capturedStart(), match.capturedLength(), format)
+
+
 class JSONHighlighter(QSyntaxHighlighter):
     """JSON语法高亮器"""
     

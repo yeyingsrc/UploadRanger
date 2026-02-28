@@ -381,7 +381,9 @@ class RepeaterWidget(QWidget):
         # 标签页
         self.tabs = QTabWidget()
         self.tabs.setTabsClosable(True)
+        self.tabs.setMovable(True)
         self.tabs.tabCloseRequested.connect(self._close_tab)
+        self.tabs.tabBarDoubleClicked.connect(self._rename_tab)
         layout.addWidget(self.tabs)
         
         # 添加第一个标签
@@ -404,6 +406,20 @@ class RepeaterWidget(QWidget):
         """关闭当前标签"""
         if self.tabs.count() > 1:
             self.tabs.removeTab(self.tabs.currentIndex())
+    
+    def _rename_tab(self, index):
+        """重命名标签"""
+        if index < 0:
+            return
+        old_name = self.tabs.tabText(index)
+        new_name, ok = QInputDialog.getText(
+            self,
+            "重命名标签",
+            "请输入新名称:",
+            text=old_name
+        )
+        if ok and new_name.strip():
+            self.tabs.setTabText(index, new_name.strip())
     
     def load_request(self, request_data: dict):
         """加载请求 - 新建标签页而不是覆盖"""

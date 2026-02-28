@@ -1,5 +1,29 @@
 # UploadRanger 更新日志
 
+## v1.0.1 (2026-02-28)
+
+### 修复问题
+
+1. **界面显示修复** (Issue #3)
+   - 修复扫描模块和流量查看器中"清除"按钮宽度过小导致字体显示不全的问题
+   - 将按钮宽度从 60px 调整为 80px
+
+2. **功能增强** (Issue #2)
+   - Repeater 模块增加标签页拖拽排序功能
+   - Repeater 模块增加双击标签重命名功能
+   - 优化标签页交互体验
+
+3. **代码优化** (Issue #1)
+   - 优化 Payload 生成器代码
+   - 修复 Webshell 模板生成时的缩进冗余问题
+   - 使用 `textwrap.dedent` 处理多行字符串
+
+4. **其他改进**
+   - 移除 `gui/proxy_widget.py` 中未使用的 `http` 模块引用，解决启动时的 NameError 警告
+   - 新增 `WebShellHighlighter` 类，支持 Payload 生成器的语法高亮 (PHP, ASP, JSP, Python, Perl)
+   - 使用 `QPlainTextEdit` 替换 `QTextEdit` 作为 Payload 编辑器，提升性能和显示效果
+   - 更新所有文档版本号至 v1.0.1
+
 ## v1.0.0 (2026-02-23)
 
 ### 新增功能

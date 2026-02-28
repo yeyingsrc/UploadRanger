@@ -1,4 +1,4 @@
-# UploadRanger v1.0.0
+# UploadRanger v1.0.1
 
 一款专业的文件上传漏洞检测工具，支持多种绕过技术检测和自动化扫描。
 
@@ -138,6 +138,7 @@ A: 这是跨线程停止的问题，已在 v1.0.0 中修复。使用 `call_soon_
 ### Q: 发送到 Repeater 报错 "httpcore[asyncio]"
 
 A: 需要安装 httpcore 的异步组件：
+
 ```bash
 pip install "httpcore[asyncio]>=0.17.0"
 ```
@@ -223,6 +224,14 @@ MIT License
 📧 联系方式：1073723512@qq.com
 
 ## 更新日志
+
+### v1.0.1 (2026-02-28)
+
+- **界面修复**: 修复扫描和流量模块中"清除"按钮字体显示不全的问题 (Issue #3)
+- **Repeater增强**: 增加标签页拖拽排序和双击重命名功能，提升交互体验 (Issue #2)
+- **代码优化**: 优化 Payload 生成器，修复 Webshell 模板缩进冗余问题 (Issue #1)
+- **稳定性提升**: 修复启动时的 NameError 警告，移除未使用的模块引用
+- **体验升级**: Payload 编辑器升级为 `QPlainTextEdit`，支持多种语言的语法高亮
 
 ### v1.0.0 (2026-02-23)
 

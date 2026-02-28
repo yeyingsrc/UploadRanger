@@ -94,7 +94,7 @@ class UploadRangerAddon:
         """设置是否拦截"""
         self.intercept_enabled = enabled
     
-    def request(self, flow: http.HTTPFlow):
+    def request(self, flow):
         """处理请求 - 修复：使用flow.intercept()非阻塞拦截，优化本地请求处理"""
         self.flow_counter += 1
         flow_id = str(self.flow_counter)
@@ -184,7 +184,7 @@ class UploadRangerAddon:
         if event:
             event.set()
     
-    def response(self, flow: http.HTTPFlow):
+    def response(self, flow):
         """处理响应 - 优化响应处理速度"""
         # 查找对应的请求 - 优化查找逻辑
         found = False

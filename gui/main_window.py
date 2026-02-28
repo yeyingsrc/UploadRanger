@@ -25,7 +25,7 @@ from .traffic_viewer import TrafficViewer
 from .proxy_widget import ProxyWidget
 from .repeater_widget import RepeaterWidget
 from .intruder_widget import IntruderWidget
-from .syntax_highlighter import HTTPHighlighter
+from .syntax_highlighter import HTTPHighlighter, WebShellHighlighter
 
 # 导入核心模块
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -211,12 +211,31 @@ class DetailViewer(QPlainTextEdit):
         self.highlighter = HTTPHighlighter(self.document(), is_request=False)
 
 
+class PayloadEditor(QPlainTextEdit):
+    """Payload编辑器 - 支持WebShell语法高亮"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFont(QFont("Consolas", 10))
+        self.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                padding: 8px;
+            }}
+        """)
+        # 添加语法高亮
+        self.highlighter = WebShellHighlighter(self.document())
+
+
 class MainWindow(QMainWindow):
     """主窗口类"""
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.0")
+        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.1")
         self.resize(1600, 1000)
         self.setMinimumSize(1400, 800)
         
@@ -275,7 +294,7 @@ class MainWindow(QMainWindow):
         
         header_layout.addStretch()
         
-        version = QLabel("v1.0.0")
+        version = QLabel("v1.0.1")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-right: 15px;")
         header_layout.addWidget(version)
         
@@ -434,7 +453,7 @@ class MainWindow(QMainWindow):
         results_header.addWidget(results_label)
         
         clear_results_btn = QPushButton("清除")
-        clear_results_btn.setFixedWidth(60)
+        clear_results_btn.setFixedWidth(80)
         clear_results_btn.clicked.connect(self._clear_results)
         results_header.addWidget(clear_results_btn)
         
@@ -457,7 +476,7 @@ class MainWindow(QMainWindow):
         vulns_header.addWidget(vulns_label)
         
         clear_vulns_btn = QPushButton("清除")
-        clear_vulns_btn.setFixedWidth(60)
+        clear_vulns_btn.setFixedWidth(80)
         clear_vulns_btn.clicked.connect(self._clear_findings)
         vulns_header.addWidget(clear_vulns_btn)
         
@@ -547,7 +566,7 @@ class MainWindow(QMainWindow):
         
         layout.addLayout(control_layout)
         
-        self.payload_code = QTextEdit()
+        self.payload_code = PayloadEditor()
         self.payload_code.setPlaceholderText("选择语言和类型后点击生成...")
         layout.addWidget(self.payload_code)
         
@@ -696,7 +715,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(title)
         
-        version = QLabel("版本 v1.0.0")
+        version = QLabel("版本 v1.0.1")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
         version.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(version)
@@ -986,7 +1005,7 @@ Payload: {finding.payload}
             code = f"# {shell['name']}\n"
             code += f"# 用法: {shell.get('usage', 'N/A')}\n\n"
             code += shell['code']
-            self.payload_code.setText(code)
+            self.payload_code.setPlainText(code)
     
     def _copy_payload(self):
         """复制Payload"""
@@ -1035,7 +1054,7 @@ Payload: {finding.payload}
                 all_code += shell['code']
                 all_code += "\n\n"
         
-        self.payload_code.setText(all_code)
+        self.payload_code.setPlainText(all_code)
         self._log(f"批量生成完成，共 {len(shells)} 个 {lang.upper()} WebShell")
     
     def _generate_bypass(self):

@@ -81,7 +81,7 @@ class TrafficViewer(QWidget):
         header_layout.addWidget(header_label)
         
         clear_btn = QPushButton("清除")
-        clear_btn.setFixedWidth(60)
+        clear_btn.setFixedWidth(80)
         clear_btn.clicked.connect(self.clear_logs)
         header_layout.addWidget(clear_btn)
         

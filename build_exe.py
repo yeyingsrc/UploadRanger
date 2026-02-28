@@ -144,6 +144,7 @@ def build_exe():
         f'--add-data=payloads{sep}payloads',
         f'--add-data=core{sep}core',
         f'--add-data=gui{sep}gui',
+        f'--add-data=assets{sep}assets',
         f'--add-data=config.py{sep}.',
     ])
     

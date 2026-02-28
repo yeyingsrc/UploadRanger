@@ -7,7 +7,7 @@ echo   by bae
 echo ==========================================
 echo.
 
-D:\Miniconda3\miniconda3\envs\reptile_base\python.exe main.py
+python main.py
 
 if errorlevel 1 (
     echo.
