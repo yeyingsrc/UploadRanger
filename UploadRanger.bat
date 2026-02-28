@@ -2,7 +2,7 @@
 chcp 936 >nul
 title UploadRanger
 echo ==========================================
-echo   UploadRanger v1.0.0
+echo   UploadRanger
 echo   by bae
 echo ==========================================
 echo.

@@ -2,7 +2,7 @@
 # UploadRanger Linux启动脚本
 
 echo "=========================================="
-echo "  UploadRanger v2.0.0"
+echo "  UploadRanger"
 echo "  文件上传漏洞测试工具"
 echo "  by bae"
 echo "=========================================="
