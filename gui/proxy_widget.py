@@ -14,13 +14,15 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, QLineEdit,
     QPushButton, QComboBox, QLabel, QTableWidget, QTableWidgetItem,
     QHeaderView, QSplitter, QGroupBox, QCheckBox, QPlainTextEdit,
-    QApplication, QTabWidget, QFrame, QMessageBox, QMenu
+    QApplication, QTabWidget, QFrame, QMessageBox, QMenu, QDialog,
+    QDialogButtonBox, QTextEdit as QDialogTextEdit
 )
 from PySide6.QtCore import Qt, Signal, QThread, QObject
 from PySide6.QtGui import QColor, QFont
 
 from .themes.dark_theme import COLORS
 from .syntax_highlighter import HTTPHighlighter
+from core.config_manager import ConfigManager
 
 # 尝试导入 mitmproxy
 try:
@@ -89,6 +91,7 @@ class UploadRangerAddon:
         self.intercept_enabled = intercept_enabled
         self.waiting_flows: Dict[str, tuple] = {}  # {flow_id: (flow, event, intercepted_flow)}
         self.flow_counter = 0
+        self._pending_tasks: list = []  # 【新增】跟踪所有待处理任务
     
     def set_intercept(self, enabled: bool):
         """设置是否拦截"""
@@ -149,7 +152,21 @@ class UploadRangerAddon:
             # 超时后自动放行
             if flow_id in self.waiting_flows:
                 flow, _, intercepted = self.waiting_flows[flow_id]
-                flow.resume()
+                try:
+                    flow.resume()
+                except Exception:
+                    pass
+                intercepted.released = True
+                if flow_id in self.waiting_flows:
+                    del self.waiting_flows[flow_id]
+        except asyncio.CancelledError:
+            # 任务被取消，清理
+            if flow_id in self.waiting_flows:
+                flow, event, intercepted = self.waiting_flows[flow_id]
+                try:
+                    flow.kill()  # 取消时丢弃请求
+                except Exception:
+                    pass
                 intercepted.released = True
                 del self.waiting_flows[flow_id]
         except Exception:
@@ -158,6 +175,11 @@ class UploadRangerAddon:
             # 清理
             if flow_id in self.waiting_flows:
                 del self.waiting_flows[flow_id]
+    
+    def cancel_all_tasks(self):
+        """取消所有待处理任务"""
+        # 直接清空等待列表，mitmproxy 会自动处理
+        self.waiting_flows.clear()
     
     def handle_action(self, flow_id: str, action: str, modified_content: bytes = None):
         """处理用户操作 - 由 GUI 线程调用"""
@@ -231,6 +253,8 @@ class ProxyThread(QThread):
         self.master = None
         self.loop = None
         self._running = False
+        # 【修复】使用实例变量以便 stop() 方法可以访问
+        self._stop_event = None
     
     def set_intercept(self, enabled: bool):
         """设置是否拦截"""
@@ -253,65 +277,251 @@ class ProxyThread(QThread):
     
     def run(self):
         """线程的主入口"""
+        import sys
+        
         if not MITMPROXY_AVAILABLE:
             self.signals.status_changed.emit("错误: mitmproxy 未安装")
             return
-        
-        # 1. 为子线程创建事件循环
+
+        # 【修复】禁用 mitmproxy 的日志处理器，避免程序退出时事件循环关闭后报错
+        import logging
+        # 保存原始日志级别
+        self._original_loglevel = logging.root.level
+        # 设置更高的日志级别，过滤掉 mitmproxy 的日志
+        logging.root.setLevel(logging.CRITICAL)
+
+        # 【修复】为子线程创建独立的事件循环
         self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
         
+        # Linux 环境下使用 DefaultSelector
+        if sys.platform.startswith('linux'):
+            self.loop = asyncio.SelectorEventLoop()
+        
+        # 设置事件循环
+        asyncio.set_event_loop(self.loop)
+
+        # 【修复】使用更可靠的方式运行异步代码
+        async def run_proxy():
+            """运行代理，并在停止时正确等待"""
+            # 创建 mitmproxy master（必须在事件循环内创建）
+            opts = options.Options(
+                listen_host=self.host,
+                listen_port=self.port,
+                ssl_insecure=True
+            )
+            self.master = DumpMaster(opts, with_termlog=False, with_dumper=False)
+
+            # 创建插件
+            self.addon = UploadRangerAddon(self.signals)
+            self.master.addons.add(self.addon)
+
+            self._running = True
+            self.signals.status_changed.emit(f"代理运行中: {self.host}:{self.port}")
+
+            # 创建停止事件
+            self._stop_event = asyncio.Event()
+
+            async def wait_for_stop():
+                """等待停止信号"""
+                while not self._stop_event.is_set():
+                    await asyncio.sleep(0.1)
+                self._running = False
+
+            # 同时运行 master 和等待停止
+            master_task = asyncio.create_task(self.master.run())
+            stop_task = asyncio.create_task(wait_for_stop())
+
+            try:
+                # 等待任一任务完成
+                done, pending = await asyncio.wait(
+                    [master_task, stop_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+
+                # 先关闭 master
+                try:
+                    self.master.shutdown()
+                except Exception:
+                    pass
+
+                # 取消 pending 任务
+                for task in pending:
+                    task.cancel()
+                    try:
+                        await asyncio.wait_for(task, timeout=2.0)
+                    except (asyncio.CancelledError, asyncio.TimeoutError, asyncio.InvalidStateError):
+                        pass
+
+            except asyncio.CancelledError:
+                try:
+                    self.master.shutdown()
+                except Exception:
+                    pass
+            except Exception as e:
+                self.signals.status_changed.emit(f"代理异常: {str(e)}")
+
+        # 使用 run_until_complete 运行协程
         try:
-            # 2. 通过 run_until_complete 启动代理
-            self.loop.run_until_complete(self._start_proxy())
+            self.loop.run_until_complete(run_proxy())
+        except (asyncio.CancelledError, RuntimeError) as e:
+            # 用户主动停止或事件循环已关闭 - 这是正常现象，不显示错误
+            if "Event loop stopped" in str(e):
+                self.signals.status_changed.emit("代理已停止")
+            else:
+                self.signals.status_changed.emit(f"代理线程退出: {str(e)}")
         except Exception as e:
-            self.signals.status_changed.emit(f"代理线程退出或异常: {str(e)}")
+            self.signals.status_changed.emit(f"代理异常: {str(e)}")
         finally:
             self._running = False
+
+            # 【方案A修复】在 finally 块中也进行彻底清理
+            import time
+            
+            # 1. 首先尝试取消所有 asyncio 任务
             if self.loop and not self.loop.is_closed():
-                self.loop.close()
-    
-    async def _start_proxy(self):
-        """真正的代理启动逻辑 - 兼容 mitmproxy 9.x 和 10.x"""
-        # 【修复】只使用所有版本都支持的参数
-        opts = options.Options(
-            listen_host=self.host,
-            listen_port=self.port,
-            ssl_insecure=True
-        )
-        
-        self.master = DumpMaster(opts, with_termlog=False, with_dumper=False)
-        
-        # 创建插件
-        self.addon = UploadRangerAddon(self.signals)
-        self.master.addons.add(self.addon)
-        
-        self._running = True
-        self.signals.status_changed.emit(f"代理运行中: {self.host}:{self.port}")
-        
-        try:
-            await self.master.run()
-        except asyncio.CancelledError:
-            pass
-    
-    def stop(self):
-        """停止代理 - 优化停止逻辑"""
-        self._running = False
-        if self.loop and self.loop.is_running():
-            try:
-                if self.master:
-                    # 使用call_soon_threadsafe安全地关闭
-                    self.loop.call_soon_threadsafe(self.master.shutdown)
-            except Exception as e:
-                print(f"停止代理时出错: {e}")
-        # 等待循环结束
-        if self.loop and not self.loop.is_closed():
-            try:
-                # 给事件循环一点时间处理关闭
-                import time
+                try:
+                    async def cleanup_tasks():
+                        """清理所有待处理任务"""
+                        try:
+                            all_tasks = asyncio.all_tasks(self.loop)
+                            pending = [t for t in all_tasks if not t.done()]
+                            if pending:
+                                for t in pending:
+                                    t.cancel()
+                                await asyncio.wait(pending, timeout=1.0)
+                        except Exception:
+                            pass
+                    
+                    if self.loop.is_running():
+                        self.loop.run_until_complete(cleanup_tasks())
+                except Exception:
+                    pass
+            
+            time.sleep(0.1)
+
+            # 2. 先移除 mitmproxy 的日志处理器，避免事件循环关闭后报错
+            if hasattr(self, 'master') and self.master:
+                try:
+                    # 移除所有日志处理器
+                    import logging
+                    for handler in logging.root.handlers[:]:
+                        if hasattr(handler, 'master'):
+                            logging.root.removeHandler(handler)
+                except Exception:
+                    pass
+
+                # 再关闭 master
+                try:
+                    self.master.shutdown()
+                except Exception:
+                    pass
+
+            time.sleep(0.1)
+
+            # 3. 清空等待列表
+            if self.addon:
+                self.addon.cancel_all_tasks()
+
+            # 4. 关闭事件循环
+            if self.loop and not self.loop.is_closed():
+                try:
+                    # 停止事件循环，这会取消所有正在等待的任务
+                    self.loop.stop()
+                except Exception:
+                    pass
+
                 time.sleep(0.1)
-            except:
+                
+                # 关闭循环
+                try:
+                    self.loop.close()
+                except Exception:
+                    pass
+
+            # 5. 清理引用
+            self.loop = None
+            self.master = None
+            self.addon = None
+            
+            # 【修复】恢复日志级别
+            if hasattr(self, '_original_loglevel'):
+                import logging
+                logging.root.setLevel(self._original_loglevel)
+
+    def stop(self):
+        """停止代理 - 彻底清理所有资源"""
+        self._running = False
+        import time
+
+        # 【修复】使用 run_coroutine_threadsafe 在运行中的事件循环中调度取消任务
+        if self.loop and not self.loop.is_closed() and self.loop.is_running():
+            try:
+                async def cancel_all_tasks():
+                    """取消事件循环中的所有待处理任务"""
+                    try:
+                        all_tasks = asyncio.all_tasks(self.loop)
+                        pending_tasks = [t for t in all_tasks if not t.done() and t != asyncio.current_task()]
+                        
+                        if pending_tasks:
+                            for task in pending_tasks:
+                                task.cancel()
+                            # 等待所有任务完成取消（设置较短的超时）
+                            await asyncio.wait_for(
+                                asyncio.gather(*pending_tasks, return_exceptions=True),
+                                timeout=1.0
+                            )
+                    except Exception:
+                        pass
+
+                # 使用 run_coroutine_threadsafe 在运行中的事件循环中调度任务
+                future = asyncio.run_coroutine_threadsafe(cancel_all_tasks(), self.loop)
+                # 等待取消操作完成，最多等待1.5秒
+                try:
+                    future.result(timeout=1.5)
+                except Exception:
+                    pass  # 忽略超时或取消异常
+            except Exception:
                 pass
+
+        # 等待任务取消完成
+        time.sleep(0.2)
+
+        # 设置停止事件
+        if self._stop_event:
+            try:
+                self._stop_event.set()
+            except Exception:
+                pass
+
+        # 等待一小段时间
+        time.sleep(0.2)
+
+        # 确保 master 已关闭
+        if hasattr(self, 'master') and self.master:
+            try:
+                self.master.shutdown()
+            except Exception:
+                pass
+
+        # 等待 master 关闭
+        time.sleep(0.3)
+
+        # 强制停止事件循环（作为最后手段）
+        if self.loop:
+            try:
+                if self.loop.is_running():
+                    self.loop.call_soon_threadsafe(self.loop.stop)
+                time.sleep(0.2)
+                if not self.loop.is_closed():
+                    self.loop.close()
+            except Exception as e:
+                print(f"停止事件循环时出错: {e}")
+
+        # 清理引用，帮助 GC
+        self._stop_event = None
+        self.master = None
+        self.addon = None
+        self.loop = None  # 彻底清理，不复用
 
 
 class ProxyHistoryTab(QWidget):
@@ -320,10 +530,15 @@ class ProxyHistoryTab(QWidget):
     send_to_repeater = Signal(object)
     send_to_intruder = Signal(object)
     
-    def __init__(self, proxy_thread: 'ProxyThread' = None):
+    def __init__(self, proxy_thread: 'ProxyThread' = None, config_manager: ConfigManager = None):
         super().__init__()
         self.proxy_thread = proxy_thread
+        self.config_manager = config_manager
         self.history = []
+        
+        # 【修复】初始化过滤规则
+        self.filter_rules = ""
+        
         self.init_ui()
     
     def init_ui(self):
@@ -350,23 +565,35 @@ class ProxyHistoryTab(QWidget):
         clear_btn.clicked.connect(self.clear_history)
         toolbar.addWidget(clear_btn)
         
-        # 【新增】Bambda过滤功能 - 支持多行
-        toolbar.addWidget(QLabel("过滤:"))
-        self.filter_input = QTextEdit()
-        self.filter_input.setPlaceholderText("# 每行一个排除条件\n# 域名排除\nfreebuf.com\njd.com\n\n# 路径排除\n.css\n.js\n.png")
-        self.filter_input.setMaximumHeight(60)
-        self.filter_input.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {COLORS['bg_secondary']};
+        # 【修复】简化的过滤控制区域 - 删除复选框，只保留按钮和统计
+        filter_control_layout = QHBoxLayout()
+        filter_control_layout.setSpacing(10)
+        
+        # 【修复】配置过滤按钮 - 点击弹出对话框
+        self.filter_config_btn = QPushButton("配置过滤规则...")
+        self.filter_config_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
                 color: {COLORS['text_primary']};
                 border: 1px solid {COLORS['border']};
-                padding: 5px;
+                padding: 5px 15px;
                 border-radius: 4px;
-                min-width: 400px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['border']};
             }}
         """)
-        self.filter_input.textChanged.connect(self._apply_filter)
-        toolbar.addWidget(self.filter_input)
+        self.filter_config_btn.clicked.connect(self._open_filter_dialog)
+        filter_control_layout.addWidget(self.filter_config_btn)
+        
+        # 过滤统计标签
+        self.filter_stats_label = QLabel("已显示 0 / 总计 0 条")
+        self.filter_stats_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+        filter_control_layout.addWidget(self.filter_stats_label)
+        
+        filter_control_layout.addStretch()
+        
+        toolbar.addLayout(filter_control_layout)
         
         toolbar.addStretch()
         
@@ -424,11 +651,14 @@ class ProxyHistoryTab(QWidget):
         
         self.history_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.history_table.setAlternatingRowColors(True)
+        self.history_table.setEditTriggers(QTableWidget.NoEditTriggers) 
         self.history_table.itemClicked.connect(self._on_item_selected)
         # 启用右键菜单
         self.history_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.history_table.customContextMenuRequested.connect(self._on_context_menu)
         
+        # 【修复】添加行高和选中样式优化 - 移除选中边框避免覆盖URL
+        self.history_table.verticalHeader().setDefaultSectionSize(28)
         self.history_table.setStyleSheet(f"""
             QTableWidget {{
                 background-color: {COLORS['bg_secondary']};
@@ -436,9 +666,23 @@ class ProxyHistoryTab(QWidget):
                 border: 1px solid {COLORS['border']};
                 gridline-color: {COLORS['border']};
             }}
+            QTableWidget::item {{
+                padding: 4px 8px;
+                border: none;
+            }}
             QTableWidget::item:selected {{
                 background-color: {COLORS['accent']};
                 color: white;
+                border: none;
+                outline: none;
+            }}
+            QTableWidget::item:focus {{
+                border: none;
+                outline: none;
+            }}
+            QTableWidget:focus {{
+                border: 1px solid {COLORS['accent']};
+                outline: none;
             }}
             QHeaderView::section {{
                 background-color: {COLORS['bg_tertiary']};
@@ -446,6 +690,7 @@ class ProxyHistoryTab(QWidget):
                 padding: 8px;
                 border: none;
                 border-right: 1px solid {COLORS['border']};
+                border-bottom: 1px solid {COLORS['border']};
                 font-weight: bold;
             }}
         """)
@@ -525,7 +770,7 @@ class ProxyHistoryTab(QWidget):
         layout.addWidget(splitter)
     
     def add_request(self, intercepted: InterceptedFlow):
-        """添加请求到历史"""
+        """【修复】添加请求到历史 - 自动应用过滤规则"""
         self.history.append(intercepted)
         
         row = self.history_table.rowCount()
@@ -560,6 +805,94 @@ class ProxyHistoryTab(QWidget):
         self.history_table.setItem(row, 5, intercept_item)
         
         self.history_table.scrollToBottom()
+        
+        # 【修复】自动对新行应用过滤规则
+        self._apply_filter_to_row(row, intercepted)
+        
+        # 更新过滤统计
+        self._update_filter_stats()
+    
+    def _apply_filter_to_row(self, row: int, intercepted: InterceptedFlow):
+        """【新增】对指定行应用过滤规则"""
+        filter_text = getattr(self, 'filter_rules', '').strip()
+        if not filter_text:
+            return
+        
+        # 解析过滤规则
+        user_excluded_domains = []
+        user_excluded_paths = []
+        user_excluded_methods = []
+        user_excluded_body = []
+        
+        lines = filter_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('//'):
+                continue
+            
+            line_lower = line.lower()
+            
+            if line_lower.startswith('domain:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_domains.append(val.lower())
+            elif line_lower.startswith('path:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_paths.append(val.lower())
+            elif line_lower.startswith('method:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_methods.append(val.upper())
+            elif line_lower.startswith('body:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_body.append(val.lower())
+            else:
+                if line.startswith('.'):
+                    user_excluded_paths.append(line.lower())
+                elif line.startswith('/'):
+                    user_excluded_paths.append(line.lower())
+                elif line.upper() in ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH']:
+                    user_excluded_methods.append(line.upper())
+                elif '.' in line:
+                    user_excluded_domains.append(line.lower())
+                else:
+                    user_excluded_body.append(line.lower())
+        
+        # 检查当前行是否应该隐藏
+        url = intercepted.url.lower()
+        method = intercepted.method.upper()
+        host = intercepted.host.lower()
+        path = url.split('?')[0] if '?' in url else url
+        body = intercepted.content.decode('utf-8', errors='ignore').lower() if intercepted.content else ''
+        
+        should_hide = False
+        
+        for domain in user_excluded_domains:
+            if domain in host:
+                should_hide = True
+                break
+        
+        if not should_hide:
+            for p in user_excluded_paths:
+                if p in path or p in url:
+                    should_hide = True
+                    break
+        
+        if not should_hide:
+            for m in user_excluded_methods:
+                if m == method:
+                    should_hide = True
+                    break
+        
+        if not should_hide and body:
+            for b in user_excluded_body:
+                if b in body:
+                    should_hide = True
+                    break
+        
+        self.history_table.setRowHidden(row, should_hide)
     
     def update_request(self, intercepted: InterceptedFlow):
         """更新请求状态 - 修复响应显示问题"""
@@ -589,11 +922,13 @@ class ProxyHistoryTab(QWidget):
                 break
     
     def clear_history(self):
-        """清除历史"""
+        """【修复】清除历史 - 添加统计更新"""
         self.history.clear()
         self.history_table.setRowCount(0)
         self.req_detail.clear()
         self.res_detail.clear()
+        # 【修复】更新统计标签
+        self._update_filter_stats()
     
     def _on_item_selected(self, item):
         """选中历史项"""
@@ -661,9 +996,108 @@ class ProxyHistoryTab(QWidget):
             req = self.history[row]
             self.send_to_intruder.emit(req.to_dict())
     
+    def _open_filter_dialog(self):
+        """【新增】打开过滤配置对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("配置过滤规则")
+        dialog.setMinimumWidth(450)
+        dialog.setMinimumHeight(400)
+        
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(15)
+        
+        # 说明标签
+        help_label = QLabel("每行一个排除条件，支持以下格式:\n"
+                           "• 域名: freebuf.com, jd.com\n"
+                           "• 路径: .css, .js, .png, /api/\n"
+                           "• 方法: GET, POST\n"
+                           "• Body内容: 任意字符串")
+        help_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 12px;")
+        layout.addWidget(help_label)
+        
+        # 过滤规则输入框
+        filter_edit = QDialogTextEdit()
+        filter_edit.setPlainText(self.filter_rules)
+        filter_edit.setPlaceholderText("# 每行一个排除条件\n"
+                                       "# 域名排除\n"
+                                       "freebuf.com\n"
+                                       "jd.com\n\n"
+                                       "# 路径排除\n"
+                                       ".css\n"
+                                       ".js\n"
+                                       ".png")
+        filter_edit.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                padding: 10px;
+                border-radius: 4px;
+                font-family: Consolas, monospace;
+                font-size: 12px;
+            }}
+        """)
+        layout.addWidget(filter_edit)
+        
+        # 按钮
+        btn_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btn_box.accepted.connect(dialog.accept)
+        btn_box.rejected.connect(dialog.reject)
+        
+        # 样式
+        btn_box.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+                padding: 8px 20px;
+                border-radius: 4px;
+                min-width: 80px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_hover']};
+            }}
+        """)
+        layout.addWidget(btn_box)
+        
+        # 应用样式
+        dialog.setStyleSheet(f"""
+            QDialog {{
+                background-color: {COLORS['bg_primary']};
+            }}
+        """)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.filter_rules = filter_edit.toPlainText()
+            self._do_apply_filter()
+            self._save_filter_config()
+    
+    def _save_filter_config(self):
+        """【修复】保存过滤配置"""
+        if self.config_manager:
+            self.config_manager.set_filter_config(
+                True,  # 过滤始终启用
+                getattr(self, 'filter_rules', '')
+            )
+            self.config_manager.save()
+    
     def _apply_filter(self):
-        """【新增】应用Bambda风格过滤 - 支持多行"""
-        filter_text = self.filter_input.toPlainText().strip()
+        """【修复】应用过滤 - 直接执行，不使用防抖"""
+        self._do_apply_filter()
+    
+    def _do_apply_filter(self):
+        """【修复】实际执行过滤逻辑 - 简化处理避免卡顿"""
+        filter_text = getattr(self, 'filter_rules', '').strip()
+        
+        # 如果没有过滤规则，显示所有行
+        if not filter_text:
+            for row in range(self.history_table.rowCount()):
+                self.history_table.setRowHidden(row, False)
+            # 更新统计
+            self._update_filter_stats()
+            return
         
         # 解析用户自定义过滤规则
         user_excluded_domains = []
@@ -671,46 +1105,52 @@ class ProxyHistoryTab(QWidget):
         user_excluded_methods = []
         user_excluded_body = []
         
-        if filter_text:
-            lines = filter_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line or line.startswith('//'):
-                    continue
-                
-                # 域名排除
-                if 'domain' in line.lower() or '.' in line and '/' not in line:
-                    if '=' in line:
-                        val = line.split('=')[-1].strip().strip('"\'')
-                        if val:
-                            user_excluded_domains.append(val.lower())
-                    else:
-                        user_excluded_domains.append(line.lower())
-                # 路径排除
-                elif 'path' in line.lower() or line.startswith('.') or line.startswith('/'):
-                    if '=' in line:
-                        val = line.split('=')[-1].strip().strip('"\'')
-                        if val:
-                            user_excluded_paths.append(val.lower())
-                    else:
-                        user_excluded_paths.append(line.lower())
-                # 方法排除
-                elif 'method' in line.lower() or line.upper() in ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH']:
-                    if '=' in line:
-                        val = line.split('=')[-1].strip().strip('"\'')
-                        if val:
-                            user_excluded_methods.append(val.upper())
-                    else:
-                        user_excluded_methods.append(line.upper())
-                # Body排除
-                elif 'body' in line.lower():
-                    if '=' in line:
-                        val = line.split('=')[-1].strip().strip('"\'')
-                        if val:
-                            user_excluded_body.append(val.lower())
-                else:
-                    # 默认作为域名排除
+        lines = filter_text.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#') or line.startswith('//'):
+                continue
+            
+            # 【修复】优化规则解析逻辑
+            line_lower = line.lower()
+            
+            # 域名排除 - 包含.且不以/开头，或者是显式的domain:xxx
+            if line_lower.startswith('domain:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_domains.append(val.lower())
+            # 路径排除 - 以.或/开头，或者是显式的path:xxx
+            elif line_lower.startswith('path:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_paths.append(val.lower())
+            # 方法排除
+            elif line_lower.startswith('method:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_methods.append(val.upper())
+            # Body排除
+            elif line_lower.startswith('body:'):
+                val = line.split(':', 1)[-1].strip().strip('"\'')
+                if val:
+                    user_excluded_body.append(val.lower())
+            # 自动判断
+            else:
+                # 以.开头的是路径/后缀
+                if line.startswith('.'):
+                    user_excluded_paths.append(line.lower())
+                # 以/开头的是路径
+                elif line.startswith('/'):
+                    user_excluded_paths.append(line.lower())
+                # 大写的方法是HTTP方法
+                elif line.upper() in ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'HEAD', 'PATCH']:
+                    user_excluded_methods.append(line.upper())
+                # 包含.的是域名
+                elif '.' in line:
                     user_excluded_domains.append(line.lower())
+                # 其他作为body排除
+                else:
+                    user_excluded_body.append(line.lower())
         
         for row in range(self.history_table.rowCount()):
             id_item = self.history_table.item(row, 0)
@@ -758,6 +1198,40 @@ class ProxyHistoryTab(QWidget):
             
             # 设置行隐藏/显示
             self.history_table.setRowHidden(row, should_hide)
+        
+        # 更新过滤统计
+        self._update_filter_stats()
+        
+        # 保存配置
+        self._save_filter_config()
+    
+    def _update_filter_stats(self):
+        """【修复】更新过滤统计信息"""
+        total = self.history_table.rowCount()
+        visible = 0
+        for row in range(total):
+            if not self.history_table.isRowHidden(row):
+                visible += 1
+        
+        self.filter_stats_label.setText(f"已显示 {visible} / 总计 {total} 条")
+        
+        # 【修复】根据是否有过滤规则和过滤效果调整颜色
+        has_filters = bool(getattr(self, 'filter_rules', '').strip())
+        if has_filters and visible < total:
+            self.filter_stats_label.setStyleSheet(f"color: {COLORS['accent']}; font-size: 11px;")
+        else:
+            self.filter_stats_label.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 11px;")
+    
+    def load_filter_config(self):
+        """【修复】加载过滤配置"""
+        if not self.config_manager:
+            return
+        
+        filter_config = self.config_manager.get_filter_config()
+        self.filter_rules = filter_config.get('rules', '')
+        
+        # 应用过滤
+        self._do_apply_filter()
 
 
 class ProxyInterceptTab(QWidget):
@@ -825,7 +1299,68 @@ class ProxyInterceptTab(QWidget):
         self.drop_btn.clicked.connect(self._drop)
         control_layout.addWidget(self.drop_btn)
         
+        # 【新增】放行全部按钮
+        self.forward_all_btn = QPushButton("放行全部")
+        self.forward_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['info']};
+                color: white;
+                border: none;
+                padding: 8px 20px;
+                border-radius: 4px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: #0284c7;
+            }}
+            QPushButton:disabled {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_secondary']};
+            }}
+        """)
+        self.forward_all_btn.setEnabled(False)
+        self.forward_all_btn.clicked.connect(self._forward_all)
+        control_layout.addWidget(self.forward_all_btn)
+        
         control_layout.addStretch()
+        
+        # 【新增】发送到模块按钮
+        send_layout = QHBoxLayout()
+        send_layout.setSpacing(8)
+        
+        to_repeater_btn = QPushButton("发送到 Repeater")
+        to_repeater_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_hover']};
+            }}
+        """)
+        to_repeater_btn.clicked.connect(self._send_to_repeater)
+        send_layout.addWidget(to_repeater_btn)
+        
+        to_intruder_btn = QPushButton("发送到 Intruder")
+        to_intruder_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['warning']};
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: #d97706;
+            }}
+        """)
+        to_intruder_btn.clicked.connect(self._send_to_intruder)
+        send_layout.addWidget(to_intruder_btn)
+        
+        control_layout.addLayout(send_layout)
         
         layout.addLayout(control_layout)
         
@@ -865,11 +1400,14 @@ class ProxyInterceptTab(QWidget):
         
         self.intercept_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.intercept_table.setAlternatingRowColors(True)
+        self.intercept_table.setEditTriggers(QTableWidget.NoEditTriggers)  # 【修复】禁用编辑，防止双击进入编辑模式
         self.intercept_table.itemClicked.connect(self._on_item_selected)
         # 启用右键菜单
         self.intercept_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.intercept_table.customContextMenuRequested.connect(self._on_context_menu)
         
+        # 【修复】添加行高和选中样式优化 - 移除选中边框避免覆盖URL
+        self.intercept_table.verticalHeader().setDefaultSectionSize(28)
         self.intercept_table.setStyleSheet(f"""
             QTableWidget {{
                 background-color: {COLORS['bg_secondary']};
@@ -877,9 +1415,15 @@ class ProxyInterceptTab(QWidget):
                 border: 1px solid {COLORS['border']};
                 gridline-color: {COLORS['border']};
             }}
+            QTableWidget::item {{
+                padding: 4px 8px;
+                border: none;
+            }}
             QTableWidget::item:selected {{
                 background-color: {COLORS['accent']};
                 color: white;
+                border: none;
+                outline: none;
             }}
             QHeaderView::section {{
                 background-color: {COLORS['bg_tertiary']};
@@ -887,6 +1431,7 @@ class ProxyInterceptTab(QWidget):
                 padding: 8px;
                 border: none;
                 border-right: 1px solid {COLORS['border']};
+                border-bottom: 1px solid {COLORS['border']};
                 font-weight: bold;
             }}
         """)
@@ -936,6 +1481,9 @@ class ProxyInterceptTab(QWidget):
         # 自动选中
         self.intercept_table.selectRow(row)
         self._on_item_selected(self.intercept_table.item(row, 0))
+        
+        # 【新增】启用放行全部按钮
+        self.forward_all_btn.setEnabled(True)
     
     def _on_item_selected(self, item):
         """选中拦截项"""
@@ -1041,6 +1589,7 @@ class ProxyInterceptTab(QWidget):
                 self.current_flow_id = None
                 self.forward_btn.setEnabled(False)
                 self.drop_btn.setEnabled(False)
+                self.forward_all_btn.setEnabled(False)
     
     def _drop(self):
         """丢弃请求 - 【修复】自动选择下一个请求"""
@@ -1071,6 +1620,53 @@ class ProxyInterceptTab(QWidget):
                 self.current_flow_id = None
                 self.forward_btn.setEnabled(False)
                 self.drop_btn.setEnabled(False)
+                self.forward_all_btn.setEnabled(False)
+    
+    def _forward_all(self):
+        """【新增】放行所有拦截的请求"""
+        if not self.proxy_thread:
+            return
+        
+        # 复制列表避免遍历时修改
+        flows_to_forward = [f for f in self.intercepted_list if not f.released]
+        
+        for intercepted in flows_to_forward:
+            # 获取当前行
+            row = -1
+            for i, f in enumerate(self.intercepted_list):
+                if f.id == intercepted.id:
+                    row = i
+                    break
+            
+            if row >= 0:
+                # 使用原始内容直接放行
+                self.proxy_thread.forward_request(intercepted.id, None)
+                intercepted.released = True
+                self.intercept_table.removeRow(row)
+                self.intercepted_list.pop(row)
+        
+        # 清空编辑区
+        self.request_edit.clear()
+        self.current_flow_id = None
+        self.forward_btn.setEnabled(False)
+        self.drop_btn.setEnabled(False)
+        self.forward_all_btn.setEnabled(False)
+    
+    def clear_intercepted(self):
+        """【新增】清空所有拦截的请求"""
+        # 丢弃所有未释放的请求
+        for intercepted in self.intercepted_list:
+            if not intercepted.released and self.proxy_thread:
+                self.proxy_thread.drop_request(intercepted.id)
+        
+        # 清空列表和表格
+        self.intercepted_list.clear()
+        self.intercept_table.setRowCount(0)
+        self.request_edit.clear()
+        self.current_flow_id = None
+        self.forward_btn.setEnabled(False)
+        self.drop_btn.setEnabled(False)
+        self.forward_all_btn.setEnabled(False)
 
 
 class ProxyWidget(QWidget):
@@ -1082,7 +1678,12 @@ class ProxyWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.proxy_thread = None
+        self._is_toggling = False  # 【修复】防止重复点击的标志
+        # 初始化配置管理器
+        self.config_manager = ConfigManager()
         self.init_ui()
+        # 加载配置
+        self._load_config()
     
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -1184,8 +1785,8 @@ class ProxyWidget(QWidget):
         self.intercept_tab.send_to_intruder.connect(self._on_send_to_intruder)
         self.tabs.addTab(self.intercept_tab, "拦截")
         
-        # 历史标签
-        self.history_tab = ProxyHistoryTab(None)
+        # 历史标签 - 传入配置管理器
+        self.history_tab = ProxyHistoryTab(None, self.config_manager)
         self.history_tab.send_to_repeater.connect(self._on_send_to_repeater)
         self.history_tab.send_to_intruder.connect(self._on_send_to_intruder)
         self.tabs.addTab(self.history_tab, "历史")
@@ -1209,50 +1810,25 @@ class ProxyWidget(QWidget):
             QMessageBox.warning(self, "警告", "mitmproxy 未安装，请先运行: pip install mitmproxy")
             return
         
-        if self.proxy_thread and self.proxy_thread._running:
-            # 停止代理
-            self.proxy_thread.stop()
-            self.proxy_thread.wait()
-            self.proxy_thread = None
-            
-            self.start_btn.setText("启动代理")
-            self.start_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {COLORS['success']};
-                    color: white;
-                    border: none;
-                    padding: 8px 20px;
-                    border-radius: 4px;
-                    font-weight: bold;
-                }}
-                QPushButton:hover {{
-                    background-color: #059669;
-                }}
-            """)
-            self.status_label.setText("代理未启动")
-            self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']}; padding: 5px;")
-            
-            # 更新标签页
-            self.intercept_tab.proxy_thread = None
-            self.history_tab.proxy_thread = None
-        else:
-            # 启动代理
-            try:
-                host = self.host_input.text() or "127.0.0.1"
-                port = int(self.port_input.text() or 8080)
+        # 【修复】防止重复点击
+        if self._is_toggling:
+            return
+        self._is_toggling = True
+        self.start_btn.setEnabled(False)
+        
+        try:
+            if self.proxy_thread and self.proxy_thread._running:
+                # 停止代理
+                self.proxy_thread.stop()
+                # 【修复】使用更长的等待时间，确保线程完全结束
+                if not self.proxy_thread.wait(5000):  # 等待最多5秒
+                    print("警告: 代理线程未在5秒内结束")
+                self.proxy_thread = None
                 
-                self.proxy_thread = ProxyThread(host, port)
-                self.proxy_thread.signals.request_intercepted.connect(self._on_intercepted)
-                self.proxy_thread.signals.request_logged.connect(self._on_logged)
-                self.proxy_thread.signals.response_received.connect(self._on_response)
-                self.proxy_thread.signals.status_changed.connect(self._on_status_changed)
-                self.proxy_thread.set_intercept(self.intercept_cb.isChecked())
-                self.proxy_thread.start()
-                
-                self.start_btn.setText("停止代理")
+                self.start_btn.setText("启动代理")
                 self.start_btn.setStyleSheet(f"""
                     QPushButton {{
-                        background-color: {COLORS['danger']};
+                        background-color: {COLORS['success']};
                         color: white;
                         border: none;
                         padding: 8px 20px;
@@ -1260,19 +1836,97 @@ class ProxyWidget(QWidget):
                         font-weight: bold;
                     }}
                     QPushButton:hover {{
-                        background-color: #dc2626;
+                        background-color: #059669;
                     }}
                 """)
+                self.status_label.setText("代理未启动")
+                self.status_label.setStyleSheet(f"color: {COLORS['text_secondary']}; padding: 5px;")
                 
                 # 更新标签页
-                self.intercept_tab.proxy_thread = self.proxy_thread
-                self.history_tab.proxy_thread = self.proxy_thread
+                self.intercept_tab.proxy_thread = None
+                self.history_tab.proxy_thread = None
                 
-            except Exception as e:
-                self.status_label.setText(f"启动失败: {str(e)}")
-                self.status_label.setStyleSheet(f"color: {COLORS['danger']}; padding: 5px;")
-                QMessageBox.critical(self, "错误", f"启动代理失败: {str(e)}")
-    
+                # 【修复】清空拦截列表
+                self.intercept_tab.clear_intercepted()
+                
+                # 保存配置
+                self._save_config()
+            else:
+                # 【修复】确保旧线程已经完全结束
+                if self.proxy_thread:
+                    self.proxy_thread.stop()
+                    # 等待旧线程结束（最多5秒）
+                    if self.proxy_thread.isRunning():
+                        self.proxy_thread.wait(5000)
+                    # 【修复】强制终止如果还在运行
+                    if self.proxy_thread.isRunning():
+                        self.proxy_thread.terminate()
+                        self.proxy_thread.wait(1000)
+                    self.proxy_thread = None
+                    # 【修复】等待更长时间确保端口释放
+                    import time
+                    time.sleep(1.0)
+                
+                # 启动代理
+                try:
+                    host = self.host_input.text() or "127.0.0.1"
+                    port = int(self.port_input.text() or 8080)
+                    
+                    self.proxy_thread = ProxyThread(host, port)
+                    self.proxy_thread.signals.request_intercepted.connect(self._on_intercepted)
+                    self.proxy_thread.signals.request_logged.connect(self._on_logged)
+                    self.proxy_thread.signals.response_received.connect(self._on_response)
+                    self.proxy_thread.signals.status_changed.connect(self._on_status_changed)
+                    self.proxy_thread.set_intercept(self.intercept_cb.isChecked())
+                    self.proxy_thread.start()
+                    
+                    self.start_btn.setText("停止代理")
+                    self.start_btn.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {COLORS['danger']};
+                            color: white;
+                            border: none;
+                            padding: 8px 20px;
+                            border-radius: 4px;
+                            font-weight: bold;
+                        }}
+                        QPushButton:hover {{
+                            background-color: #dc2626;
+                        }}
+                    """)
+                    
+                    # 更新标签页
+                    self.intercept_tab.proxy_thread = self.proxy_thread
+                    self.history_tab.proxy_thread = self.proxy_thread
+                    
+                except Exception as e:
+                    self.status_label.setText(f"启动失败: {str(e)}")
+                    self.status_label.setStyleSheet(f"color: {COLORS['danger']}; padding: 5px;")
+                    QMessageBox.critical(self, "错误", f"启动代理失败: {str(e)}")
+                finally:
+                    # 保存配置
+                    self._save_config()
+        finally:
+            # 【修复】恢复按钮状态
+            self._is_toggling = False
+            self.start_btn.setEnabled(True)
+
+    def stop_proxy(self):
+        """外部调用：停止代理线程"""
+        if self.proxy_thread and self.proxy_thread._running:
+            self.proxy_thread.stop()
+            if self.proxy_thread.isRunning():
+                self.proxy_thread.wait(3000)
+        
+        # 【方案A修复】停止后清理引用，确保下次启动创建新实例
+        import time
+        time.sleep(0.5)
+        self.proxy_thread = None
+        
+        # 更新标签页的引用
+        self.intercept_tab.proxy_thread = None
+        self.history_tab.proxy_thread = None
+
     def _on_intercept_changed(self, state):
         """拦截状态改变"""
         if self.proxy_thread:
@@ -1306,3 +1960,38 @@ class ProxyWidget(QWidget):
     def _on_send_to_intruder(self, request_data):
         """发送到Intruder"""
         self.send_to_intruder.emit(request_data)
+    
+    def _load_config(self):
+        """【新增】加载配置"""
+        if not self.config_manager:
+            return
+        
+        # 加载代理配置
+        proxy_config = self.config_manager.get_proxy_config()
+        self.host_input.setText(proxy_config.get('host', '127.0.0.1'))
+        self.port_input.setText(str(proxy_config.get('port', 8080)))
+        self.intercept_cb.setChecked(proxy_config.get('intercept', True))
+        
+        # 加载过滤配置
+        self.history_tab.load_filter_config()
+    
+    def _save_config(self):
+        """【新增】保存配置"""
+        if not self.config_manager:
+            return
+        
+        # 保存代理配置
+        try:
+            port = int(self.port_input.text() or 8080)
+        except:
+            port = 8080
+        
+        self.config_manager.set_proxy_config(
+            self.host_input.text() or '127.0.0.1',
+            port,
+            self.intercept_cb.isChecked()
+        )
+        
+        # 保存过滤配置（在历史标签中自动保存）
+        
+        self.config_manager.save()

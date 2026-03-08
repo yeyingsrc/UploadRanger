@@ -53,7 +53,14 @@ class AsyncScannerWorker(QThread):
     
     def run(self):
         """运行扫描"""
+        import sys
+        
         loop = asyncio.new_event_loop()
+        
+        # Linux 环境使用 Selector
+        if sys.platform.startswith('linux'):
+            loop = asyncio.SelectorEventLoop()
+        
         asyncio.set_event_loop(loop)
         
         try:
@@ -80,8 +87,13 @@ class AsyncScannerWorker(QThread):
             empty_result = ScanResult(target=self.target_url, start_time=datetime.now())
             self.finished.emit(empty_result)
         finally:
-            loop.close()
+            if loop and not loop.is_closed():
+                try:
+                    loop.close()
+                except Exception:
+                    pass
     
     def stop(self):
         """停止扫描"""
         self.scanner.stop()
+        self.wait(1000)

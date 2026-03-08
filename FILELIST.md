@@ -3,7 +3,7 @@
 ## 项目信息
 
 - **名称**: UploadRanger
-- **版本**: v1.0.1
+- **版本**: v1.0.2
 - **作者**: bae
 - **联系**: 1073723512@qq.com
 - **描述**: 现代化文件上传漏洞测试工具
@@ -27,19 +27,20 @@
 
 ### core/ - 核心模块
 
-| 文件名                     | 说明                         |
-| -------------------------- | ---------------------------- |
-| **init**.py                | 模块初始化                   |
-| async_http_client.py       | 异步HTTP客户端               |
-| async_response_analyzer.py | 异步响应分析器               |
-| async_scanner.py           | 异步扫描引擎                 |
-| async_scanner_worker.py    | 异步扫描工作线程             |
-| form_parser.py             | 表单解析器，自动发现上传表单 |
-| http_client.py             | HTTP客户端，处理所有网络请求 |
-| models.py                  | 数据模型定义                 |
-| proxy_server.py            | 代理服务器实现               |
-| response_analyzer.py       | 响应分析器，分析上传结果     |
-| scanner.py                 | 扫描引擎，核心扫描逻辑       |
+| 文件名                     | 说明                                 |
+| -------------------------- | ------------------------------------ |
+| **init**.py                | 模块初始化                           |
+| async_http_client.py       | 异步HTTP客户端                       |
+| async_response_analyzer.py | 异步响应分析器                       |
+| async_scanner.py           | 异步扫描引擎                         |
+| async_scanner_worker.py    | 异步扫描工作线程                     |
+| config_manager.py          | 配置管理器，支持JSON格式配置持久化   |
+| form_parser.py             | 表单解析器，自动发现上传表单         |
+| http_client.py             | HTTP客户端，处理所有网络请求         |
+| models.py                  | 数据模型定义                         |
+| proxy_server.py            | 代理服务器实现                       |
+| response_analyzer.py       | 响应分析器，分析上传结果             |
+| scanner.py                 | 扫描引擎，核心扫描逻辑               |
 
 ### payloads/ - Payload模块
 
@@ -201,6 +202,17 @@ python build_exe.py --onefile
 4. 使用本工具造成的后果由使用者承担
 
 ## 更新日志
+
+### v1.0.2 (2026-03-07)
+
+- **配置持久化**: 新增 ConfigManager 配置管理
+器，代理设置自动保存和恢复
+- **过滤增强**: 代理历史记录添加过滤启用开关、
+300ms防抖、统计信息显示
+- **导入修复**: 修复相对导入导致的 ImportError 
+启动错误
+- **UI优化**: 修复 Repeater 重命名对话框宽度和绕
+过技术表格选中样式问题
 
 ### v1.0.1 (2026-02-28)
 

@@ -3,7 +3,7 @@
 """
 UploadRanger - 文件上传漏洞测试工具
 作者: bae
-版本: v1.0.1
+版本: v1.0.2
 """
 
 import sys

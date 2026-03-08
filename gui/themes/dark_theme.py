@@ -28,7 +28,7 @@ DARK_STYLESHEET = f"""
 QWidget {{
     background-color: {COLORS['bg_primary']};
     color: {COLORS['text_primary']};
-    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-family: "Microsoft YaHei", "WenQuanYi Micro Hei", "Noto Sans CJK SC", "Source Han Sans SC", "SimHei", sans-serif;
     font-size: 13px;
 }}
 

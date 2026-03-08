@@ -30,16 +30,34 @@ class RepeaterWorker(QThread):
     def __init__(self, request_data: dict):
         super().__init__()
         self.request_data = request_data
+        self._loop = None
     
     def run(self):
+        import sys
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            result = loop.run_until_complete(self._send_request())
+            self._loop = asyncio.new_event_loop()
+            
+            # Linux 环境使用 Selector
+            if sys.platform.startswith('linux'):
+                self._loop = asyncio.SelectorEventLoop()
+            
+            asyncio.set_event_loop(self._loop)
+            result = self._loop.run_until_complete(self._send_request())
             self.finished.emit(result)
-            loop.close()
         except Exception as e:
             self.error.emit(str(e))
+        finally:
+            if self._loop and not self._loop.is_closed():
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
+    
+    def stop(self):
+        """停止请求"""
+        if self._loop and self._loop.is_running():
+            self._loop.stop()
+        self.wait(1000)
     
     async def _send_request(self):
         url = self.request_data.get('url', '')
@@ -412,12 +430,48 @@ class RepeaterWidget(QWidget):
         if index < 0:
             return
         old_name = self.tabs.tabText(index)
-        new_name, ok = QInputDialog.getText(
-            self,
-            "重命名标签",
-            "请输入新名称:",
-            text=old_name
-        )
+        
+        # 使用自定义对话框，设置合适宽度
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("重命名标签")
+        dialog.setLabelText("请输入新名称:")
+        dialog.setTextValue(old_name)
+        dialog.setMinimumWidth(350)
+        
+        # 应用样式
+        dialog.setStyleSheet(f"""
+            QInputDialog {{
+                background-color: {COLORS['bg_primary']};
+            }}
+            QLabel {{
+                color: {COLORS['text_primary']};
+                font-size: 13px;
+                padding: 5px;
+            }}
+            QLineEdit {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                padding: 5px;
+                min-width: 200px;
+            }}
+            QPushButton {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 16px;
+                min-width: 60px;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent_hover']};
+            }}
+        """)
+        
+        ok = dialog.exec()
+        new_name = dialog.textValue()
+        
         if ok and new_name.strip():
             self.tabs.setTabText(index, new_name.strip())
     

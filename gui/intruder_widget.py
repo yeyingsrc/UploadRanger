@@ -39,18 +39,33 @@ class IntruderWorker(QThread):
         self.attack_mode = attack_mode
         self.threads = threads
         self._is_running = True
+        self._loop = None
     
     def stop(self):
         self._is_running = False
+        if self._loop and self._loop.is_running():
+            self._loop.stop()
+        self.wait(1000)
     
     def run(self):
+        import sys
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._attack())
-            loop.close()
+            self._loop = asyncio.new_event_loop()
+            
+            # Linux 环境使用 Selector
+            if sys.platform.startswith('linux'):
+                self._loop = asyncio.SelectorEventLoop()
+            
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._attack())
         except Exception as e:
             self.error_signal.emit(str(e))
+        finally:
+            if self._loop and not self._loop.is_closed():
+                try:
+                    self._loop.close()
+                except Exception:
+                    pass
     
     async def _attack(self):
         url = self.base_request.get('url', '')
@@ -420,9 +435,9 @@ class IntruderWidget(QWidget):
         self.payload_set_combo.setFixedWidth(60)
         payload_control.addWidget(self.payload_set_combo)
         
-        # + 按钮
-        add_set_btn = QPushButton("+")
-        add_set_btn.setFixedWidth(35)
+        # + 按钮 - 【修复】增大宽度确保文字显示完整
+        add_set_btn = QPushButton("添加")
+        add_set_btn.setFixedWidth(70)
         add_set_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {COLORS['success']};
@@ -430,11 +445,13 @@ class IntruderWidget(QWidget):
                 border: none;
                 border-radius: 4px;
                 font-weight: bold;
+                padding: 5px 10px;
             }}
             QPushButton:hover {{
                 background-color: #059669;
             }}
         """)
+        add_set_btn.setToolTip("添加新Payload集合")
         add_set_btn.clicked.connect(self._add_payload_set)
         payload_control.addWidget(add_set_btn)
         

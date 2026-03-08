@@ -105,12 +105,42 @@ class TrafficViewer(QWidget):
         
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)  # 【修复】禁用编辑
         self.table.itemClicked.connect(self.display_details)
         self.table.setAlternatingRowColors(True)
         
         # 右键菜单
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self.show_context_menu)
+        
+        # 【修复】添加表格样式，移除选中边框
+        self.table.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                gridline-color: {COLORS['border']};
+            }}
+            QTableWidget::item {{
+                padding: 4px 8px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+                outline: none;
+            }}
+            QHeaderView::section {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                padding: 8px;
+                border: none;
+                border-right: 1px solid {COLORS['border']};
+                border-bottom: 1px solid {COLORS['border']};
+                font-weight: bold;
+            }}
+        """)
         
         left_layout.addWidget(self.table)
         

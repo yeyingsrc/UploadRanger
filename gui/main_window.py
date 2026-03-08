@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-主窗口 - UploadRanger GUI主界面 v1.0.0
+主窗口 - UploadRanger GUI主界面 v1.0.2
 整合upload_forge功能，添加请求/响应查看、Repeater和Intruder功能
 """
 
@@ -61,7 +61,37 @@ class ResultsTable(QTableWidget):
         
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QTableWidget.SelectRows)
+        self.setEditTriggers(QTableWidget.NoEditTriggers)  # 【修复】禁用编辑
         self.setAlternatingRowColors(True)
+        
+        # 【修复】添加表格样式，移除选中边框
+        self.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                gridline-color: {COLORS['border']};
+            }}
+            QTableWidget::item {{
+                padding: 4px 8px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+                outline: none;
+            }}
+            QHeaderView::section {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                padding: 8px;
+                border: none;
+                border-right: 1px solid {COLORS['border']};
+                border-bottom: 1px solid {COLORS['border']};
+                font-weight: bold;
+            }}
+        """)
         
         # 存储所有结果
         self.results = []
@@ -151,7 +181,37 @@ class FindingsTable(QTableWidget):
         
         self.verticalHeader().setVisible(False)
         self.setSelectionBehavior(QTableWidget.SelectRows)
+        self.setEditTriggers(QTableWidget.NoEditTriggers)  # 【修复】禁用编辑
         self.setAlternatingRowColors(True)
+        
+        # 【修复】添加表格样式，移除选中边框
+        self.setStyleSheet(f"""
+            QTableWidget {{
+                background-color: {COLORS['bg_secondary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                gridline-color: {COLORS['border']};
+            }}
+            QTableWidget::item {{
+                padding: 4px 8px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+                outline: none;
+            }}
+            QHeaderView::section {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                padding: 8px;
+                border: none;
+                border-right: 1px solid {COLORS['border']};
+                border-bottom: 1px solid {COLORS['border']};
+                font-weight: bold;
+            }}
+        """)
     
     def clear_results(self):
         self.setRowCount(0)
@@ -235,7 +295,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.1")
+        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.2")
         self.resize(1600, 1000)
         self.setMinimumSize(1400, 800)
         
@@ -250,12 +310,23 @@ class MainWindow(QMainWindow):
         
         # 创建UI
         self._create_ui()
+
+        # 【修复】连接关闭事件
+        self.closeEvent = self._on_close_event
     
     def _load_icon(self):
         """加载应用图标"""
         icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.png")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
+
+    def _on_close_event(self, event):
+        """窗口关闭前停止所有后台线程"""
+        # 停止代理线程
+        if hasattr(self, 'proxy_widget') and self.proxy_widget:
+            self.proxy_widget.stop_proxy()
+
+        event.accept()
     
     def _create_ui(self):
         """创建UI界面"""
@@ -294,7 +365,7 @@ class MainWindow(QMainWindow):
         
         header_layout.addStretch()
         
-        version = QLabel("v1.0.1")
+        version = QLabel("v1.0.2")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-right: 15px;")
         header_layout.addWidget(version)
         
@@ -615,6 +686,35 @@ class MainWindow(QMainWindow):
         self.bypass_table.horizontalHeader().setStretchLastSection(True)
         self.bypass_table.verticalHeader().setVisible(False)
         self.bypass_table.setAlternatingRowColors(True)
+        
+        # 设置选中样式，防止边框覆盖文字
+        self.bypass_table.setStyleSheet(f"""
+            QTableWidget {{
+                gridline-color: {COLORS['border']};
+                outline: none;
+            }}
+            QTableWidget::item {{
+                padding: 6px 10px;
+                border: none;
+            }}
+            QTableWidget::item:selected {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border: none;
+            }}
+            QTableWidget::item:focus {{
+                border: none;
+                outline: none;
+            }}
+            QTableWidget::item:selected:!active {{
+                background-color: {COLORS['accent']};
+                color: white;
+            }}
+        """)
+        
+        # 禁用编辑，避免双击进入编辑模式
+        self.bypass_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        
         layout.addWidget(self.bypass_table)
         
         self.tabs.addTab(bypass_tab, "绕过技术")
@@ -715,7 +815,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(title)
         
-        version = QLabel("版本 v1.0.1")
+        version = QLabel("版本 v1.0.2")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
         version.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(version)
@@ -1141,8 +1241,62 @@ def run_gui():
     # 【修复】过滤PySide6 QThread警告
     import warnings
     warnings.filterwarnings("ignore", category=RuntimeWarning, module="PySide6")
+
+    # 【修复】捕获 mitmproxy 日志处理器在程序退出时的异常
+    import logging
+    _original_handle = logging.Handler.handle
+
+    def _patched_handle(self, record):
+        try:
+            return _original_handle(self, record)
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e):
+                return  # 忽略事件循环关闭错误
+            raise
+
+    logging.Handler.handle = _patched_handle
+
+    # 【修复】设置事件循环策略，避免QThread崩溃
+    # Linux/WSL 使用 DefaultEventLoopPolicy
+    # Windows 使用 SelectorEventLoopPolicy 避免 IocpProactor 与 QThread 冲突
+    import asyncio
+    try:
+        if sys.platform.startswith('linux'):
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+        elif sys.platform == 'win32':
+            # Windows 上使用 Selector 事件循环，避免 IocpProactor 问题
+            asyncio.set_event_loop_policy(asyncio.SelectorEventLoopPolicy())
+    except Exception:
+        pass
     
     app = QApplication(sys.argv)
+    
+    # 【修复】Linux/WSL环境下设置中文字体，防止乱码
+    if sys.platform.startswith('linux'):
+        from PySide6.QtGui import QFont, QFontDatabase
+        # 尝试设置Linux可用的中文字体
+        linux_fonts = [
+            "WenQuanYi Micro Hei",
+            "Noto Sans CJK SC",
+            "Source Han Sans SC",
+            "SimHei",
+            "DejaVu Sans",
+            "Liberation Sans"
+        ]
+        font_db = QFontDatabase()
+        available_fonts = font_db.families()
+        
+        selected_font = None
+        for font_name in linux_fonts:
+            if font_name in available_fonts:
+                selected_font = font_name
+                break
+        
+        if selected_font:
+            font = QFont(selected_font, 13)
+            font.setStyleHint(QFont.SansSerif)
+            app.setFont(font)
+    
     apply_dark_theme(app)
     
     window = MainWindow()
