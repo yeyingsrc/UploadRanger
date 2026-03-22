@@ -17,7 +17,8 @@ class ResponseAnalyzer:
         self.success_indicators = [
             "上传成功", "success", "uploaded", "file uploaded", "上传完成",
             "文件已上传", "upload complete", "successfully", "成功",
-            "upload ok", "upload success", "文件上传成功", "上传OK"
+            "upload ok", "upload success", "文件上传成功", "上传OK",
+            "上传成功！", "上传完成！", "文件已保存"
         ]
         
         # 失败标识
@@ -25,7 +26,11 @@ class ResponseAnalyzer:
             "上传失败", "failed", "error", "invalid", "不允许",
             "文件类型错误", "file type not allowed", "upload failed",
             "forbidden", "blocked", "拒绝", "not allowed", "unsupported",
-            "invalid file", "file too large", "extension not allowed"
+            "invalid file", "file too large", "extension not allowed",
+            # 中文错误提示增强
+            "文件未知", "上传失败！", "上传错误", "类型不允许",
+            "后缀不允许", "格式不正确", "文件过大", "上传被阻止",
+            "非法文件", "恶意文件", "危险文件", "禁止上传"
         ]
         
         # 文件路径模式
@@ -54,7 +59,12 @@ class ResponseAnalyzer:
             "response_time": None,
             "content_length": 0,
             "indicators": [],
-            "suggestions": []
+            "suggestions": [],
+            # 新增: 详细提示信息
+            "error_messages": [],
+            "warning_messages": [],
+            "success_messages": [],
+            "hidden_indicators": []
         }
         
         # 处理错误响应
@@ -71,6 +81,19 @@ class ResponseAnalyzer:
             content = response.text.lower()
             original_content = response.text
             
+            # 新增: 提取页面提示信息
+            error_msgs = self._extract_page_messages(original_content, 'error')
+            warning_msgs = self._extract_page_messages(original_content, 'warning')
+            success_msgs = self._extract_page_messages(original_content, 'success')
+            
+            result["error_messages"] = error_msgs
+            result["warning_messages"] = warning_msgs
+            result["success_messages"] = success_msgs
+            
+            # 新增: 检测隐藏的成功指示
+            hidden_indicators = self._detect_hidden_indicators(original_content)
+            result["hidden_indicators"] = hidden_indicators
+            
             # 检查成功标识
             for indicator in self.success_indicators:
                 if indicator.lower() in content:
@@ -83,10 +106,32 @@ class ResponseAnalyzer:
                     result["is_failure"] = True
                     result["indicators"].append(f"发现失败标识: {indicator}")
             
-            # 根据状态码判断
+            # 新增: 根据提取的消息判断
+            if success_msgs and not error_msgs:
+                result["is_success"] = True
+            if error_msgs and not success_msgs:
+                result["is_failure"] = True
+            
+            # 根据状态码和消息综合判断
+            # 修复：即使状态码200，如果有错误消息也判定为失败
             if response.status_code == 200:
-                if not result["is_failure"]:
+                # 如果有明确的错误消息，判定为失败
+                if error_msgs:
+                    result["is_success"] = False
+                    result["is_failure"] = True
+                # 如果有成功消息或上传路径，判定为成功
+                elif success_msgs or result["uploaded_path"]:
                     result["is_success"] = True
+                # 如果没有错误也没有成功标识，保持未知
+                else:
+                    # 检查是否有其他负面指示
+                    if any(indicator in content for indicator in ["失败", "错误", "unknown", "invalid"]):
+                        result["is_failure"] = True
+                        result["is_success"] = False
+                    else:
+                        # 无明确成功/失败信号时不默认成功，避免误报
+                        result["is_success"] = False
+                        result["suggestions"].append("无法确定上传结果，建议手动验证")
             elif response.status_code in [403, 415, 400]:
                 result["is_failure"] = True
                 result["suggestions"].append("可能需要使用绕过技术")
@@ -103,7 +148,11 @@ class ResponseAnalyzer:
             elif result["is_success"]:
                 result["message"] = "上传可能成功，但未找到文件路径"
             elif result["is_failure"]:
-                result["message"] = "上传被阻止"
+                # 新增: 包含错误消息
+                if error_msgs:
+                    result["message"] = f"上传被阻止: {error_msgs[0]}"
+                else:
+                    result["message"] = "上传被阻止"
             else:
                 result["message"] = "无法确定上传结果"
             
@@ -111,6 +160,130 @@ class ResponseAnalyzer:
             result["message"] = f"分析错误: {str(e)}"
         
         return result
+    
+    def _extract_page_messages(self, html_content, msg_type):
+        """提取页面中的提示信息
+        
+        Args:
+            html_content: HTML内容
+            msg_type: 消息类型 ('error', 'warning', 'success', 'info')
+        
+        Returns:
+            List[str]: 提取的消息列表
+        """
+        messages = []
+        
+        # 通用CSS类名模式
+        class_patterns = {
+            'error': [
+                r'<div[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*alert-error[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*alert-danger[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</span>',
+                r'<p[^>]*class="[^"]*error[^"]*"[^>]*>(.*?)</p>',
+                r'<div[^>]*id="[^"]*error[^"]*"[^>]*>(.*?)</div>',
+                # 新增：针对upload-labs等靶场的提示样式
+                r'<div[^>]*style="[^"]*color:\s*red[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*style="[^"]*color:\s*red[^"]*"[^>]*>(.*?)</span>',
+                r'<font[^>]*color="[^"]*red[^"]*"[^>]*>(.*?)</font>',
+                r'<div[^>]*class="[^"]*msg[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*tip[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*notice[^"]*"[^>]*>(.*?)</div>',
+            ],
+            'warning': [
+                r'<div[^>]*class="[^"]*warning[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*alert-warning[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*class="[^"]*warning[^"]*"[^>]*>(.*?)</span>',
+                r'<div[^>]*style="[^"]*color:\s*orange[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*style="[^"]*color:\s*#ff[^"]*"[^>]*>(.*?)</div>',
+            ],
+            'success': [
+                r'<div[^>]*class="[^"]*success[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*alert-success[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*class="[^"]*success[^"]*"[^>]*>(.*?)</span>',
+                r'<div[^>]*style="[^"]*color:\s*green[^"]*"[^>]*>(.*?)</div>',
+                r'<font[^>]*color="[^"]*green[^"]*"[^>]*>(.*?)</font>',
+            ],
+            'info': [
+                r'<div[^>]*class="[^"]*info[^"]*"[^>]*>(.*?)</div>',
+                r'<div[^>]*class="[^"]*alert-info[^"]*"[^>]*>(.*?)</div>',
+                r'<span[^>]*class="[^"]*info[^"]*"[^>]*>(.*?)</span>',
+                r'<div[^>]*style="[^"]*color:\s*blue[^"]*"[^>]*>(.*?)</div>',
+            ]
+        }
+        
+        patterns = class_patterns.get(msg_type, [])
+        
+        for pattern in patterns:
+            try:
+                matches = re.findall(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                for match in matches:
+                    # 清理HTML标签
+                    clean_text = re.sub(r'<[^>]+>', '', match).strip()
+                    if clean_text and len(clean_text) > 2:
+                        messages.append(clean_text)
+            except Exception:
+                continue
+        
+        return messages
+    
+    def _detect_hidden_indicators(self, html_content):
+        """检测隐藏的成功指示
+        
+        有些网站可能用JavaScript、注释等方式隐藏提示信息
+        
+        Args:
+            html_content: HTML内容
+        
+        Returns:
+            List[str]: 检测到的隐藏指示列表
+        """
+        indicators = []
+        
+        # 检测JavaScript中的提示
+        js_patterns = [
+            r'alert\s*\(\s*["\']([^"\']+)["\']',
+            r'console\.log\s*\(\s*["\']([^"\']+)["\']',
+            r'toast\s*\(\s*["\']([^"\']+)["\']',
+            r'notify\s*\(\s*["\']([^"\']+)["\']',
+        ]
+        
+        for pattern in js_patterns:
+            matches = re.findall(pattern, html_content, re.IGNORECASE)
+            for match in matches:
+                if match and len(match) > 2:
+                    indicators.append(f"JS提示: {match}")
+        
+        # 检测HTML注释中的提示
+        comment_pattern = r'<!--\s*(.+?)\s*-->'
+        comment_matches = re.findall(comment_pattern, html_content, re.DOTALL)
+        for match in comment_matches:
+            if any(keyword in match.lower() for keyword in ['upload', 'success', 'error', 'fail', 'uploaded']):
+                indicators.append(f"注释提示: {match.strip()}")
+        
+        # 检测内联样式红色文本（upload-labs等常见）
+        inline_red_pattern = r'<[^>]+style="[^"]*color:\s*#(?:ff0000|f00|red)[^"]*"[^>]*>(.*?)</[^>]+>'
+        red_matches = re.findall(inline_red_pattern, html_content, re.IGNORECASE | re.DOTALL)
+        for match in red_matches:
+            clean = re.sub(r'<[^>]+>', '', match).strip()
+            if clean and len(clean) > 2:
+                indicators.append(f"红色提示: {clean}")
+        
+        # 检测data属性中的提示
+        data_patterns = [
+            r'data-message=["\']([^"\']+)["\']',
+            r'data-error=["\']([^"\']+)["\']',
+            r'data-success=["\']([^"\']+)["\']',
+            r'data-result=["\']([^"\']+)["\']',
+        ]
+        
+        for pattern in data_patterns:
+            matches = re.findall(pattern, html_content, re.IGNORECASE)
+            for match in matches:
+                if match and len(match) > 2:
+                    indicators.append(f"Data属性: {match}")
+        
+        return indicators
     
     def _extract_upload_path(self, content, base_url):
         """提取上传文件路径"""

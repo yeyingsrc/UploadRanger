@@ -1,5 +1,26 @@
 # UploadRanger 更新日志
 
+## v1.0.4 (2026-03-22)
+
+### 新增与界面
+
+- **扫描目标**：文件参数名支持**可编辑下拉**（常见 `file` / `upload` / `img` 等），仍可手动输入任意字段名。
+- **Intruder**：攻击结果表支持**排序**；结果详情支持 **ResponseViewer**（含 Render 等视图）。
+- **右键快捷**：代理历史/拦截列表、Repeater 请求区支持发送到 Repeater / Intruder（右键与当前行对齐）。
+- **测试**：`test_response_core` / `test_response_viewer` 已合并至 **`test_all.py`**，作为唯一脚本入口。
+
+### 修复与逻辑
+
+- **异步扫描响应分析**：收紧成功词与失败优先级，减少「页面含 error/ok 等词」导致的误判；明确上传失败类文案优先判失败。
+- **同步响应分析**：无明确成功/失败信号时不再默认成功；负面关键词与失败标识一致。
+- **代理**：mitmproxy 导入失败时输出**具体异常**与**当前 `sys.executable`**，提示使用 `python -m pip install mitmproxy` 对齐解释器。
+- **同步扫描 / 表单 / Worker**：与当前 API 对齐（如 `FormParser` 需 `HTTPClient`、`UploadScanner` 需目标 URL、`AsyncScannerWorker` 参数等）。
+
+### 文档
+
+- 版本号统一为 **v1.0.4**；更新日志以本文件为准。
+- 已移除临时说明文档 `REPEATER_RESPONSE_FIX.md` 与 `.codebuddy` 计划目录（内容已合并至本版本说明）。
+
 ## v1.0.3 (2026-03-12)
 
 ### 新增功能

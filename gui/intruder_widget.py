@@ -30,6 +30,30 @@ class _NoFocusStyle(QProxyStyle):
         super().drawPrimitive(element, option, painter, widget)
 
 
+class SortableTableWidgetItem(QTableWidgetItem):
+    """【新增】支持数值排序的表格项"""
+    def __lt__(self, other):
+        if not other or other.column() != self.column():
+            return False
+        
+        try:
+            # 根据列索引处理不同类型的排序
+            col = self.column()
+            
+            if col == 0:  # # 列
+                return int(self.text()) < int(other.text())
+            elif col == 2:  # 状态码列
+                return int(self.text()) < int(other.text())
+            elif col == 3:  # 长度列
+                return int(self.text()) < int(other.text())
+            elif col == 1:  # Payload 列
+                return self.text().lower() < other.text().lower()
+            else:
+                return super().__lt__(other)
+        except (ValueError, AttributeError):
+            return False
+
+
 class IntruderWorker(QThread):
     """Intruder异步工作线程"""
     
@@ -153,36 +177,55 @@ class IntruderWorker(QThread):
         requests = []
         
         if self.attack_mode == "sniper":
+            # 【修复】Sniper: 每个位置使用对应的payload集合
+            # 位置1 -> 集合1, 位置2 -> 集合2, ...
+            # 如果位置数超过集合数，多余的位置使用最后一个集合
             for pos_idx, (pos_type, start, end) in enumerate(positions):
-                for payload_list in self.payloads:
-                    for payload in payload_list:
-                        req = self._create_request(url, headers, body, positions, pos_idx, payload)
-                        req['payload_info'] = f"位置{pos_idx+1}: {payload[:50]}"
-                        requests.append(req)
+                # 【修复】根据位置索引选择对应的payload集合
+                if pos_idx < len(self.payloads):
+                    payload_list = self.payloads[pos_idx]
+                elif self.payloads:
+                    # 位置超过集合数，使用最后一个集合
+                    payload_list = self.payloads[-1]
+                else:
+                    continue  # 没有payload集合，跳过
+                
+                for payload in payload_list:
+                    req = self._create_request(url, headers, body, positions, pos_idx, payload)
+                    req['payload_info'] = f"位置{pos_idx+1}: {payload[:50]}"
+                    requests.append(req)
         
         elif self.attack_mode == "battering_ram":
-            for payload_list in self.payloads:
+            # Battering Ram: 使用第一个payload集合，同时替换所有位置
+            if self.payloads:
+                payload_list = self.payloads[0]  # 只使用第一个集合
                 for payload in payload_list:
                     req = self._create_request_all_positions(url, headers, body, positions, payload)
-                    req['payload_info'] = f"全部: {payload[:50]}"
+                    req['payload_info'] = f"全部位置: {payload[:50]}"
                     requests.append(req)
         
         elif self.attack_mode == "pitchfork":
-            min_len = min(len(pl) for pl in self.payloads) if self.payloads else 0
-            for i in range(min_len):
-                payloads = [pl[i] for pl in self.payloads]
-                req = self._create_request_pitchfork(url, headers, body, positions, payloads)
-                req['payload_info'] = f"组合: {' | '.join(p[:30] for p in payloads)}"
-                requests.append(req)
+            # Pitchfork: 多个集合一一对应
+            # 集合1 → 位置1, 集合2 → 位置2, ...
+            # 执行次数 = min(len(集合1), len(集合2), ...)
+            if self.payloads and positions:
+                min_len = min(len(pl) for pl in self.payloads) if self.payloads else 0
+                for i in range(min_len):
+                    payloads_for_req = [pl[i] for pl in self.payloads]
+                    req = self._create_request_pitchfork(url, headers, body, positions, payloads_for_req)
+                    req['payload_info'] = f"组合: {' | '.join(p[:30] for p in payloads_for_req)}"
+                    requests.append(req)
         
         elif self.attack_mode == "cluster_bomb":
-            from itertools import product
-            for combo in product(*self.payloads):
-                for pos_idx, (pos_type, start, end) in enumerate(positions):
-                    if pos_idx < len(combo):
-                        req = self._create_request(url, headers, body, positions, pos_idx, combo[pos_idx])
-                        req['payload_info'] = f"组合: {' | '.join(c[:20] for c in combo)}"
-                        requests.append(req)
+            # Cluster Bomb: 笛卡尔积模式
+            # 集合1 × 集合2 × ... = 所有组合
+            # 例如: 集合1有3个, 集合2有2个 → 3×2=6次请求
+            if self.payloads and positions:
+                from itertools import product
+                for combo in product(*self.payloads):
+                    req = self._create_request_pitchfork(url, headers, body, positions, list(combo))
+                    req['payload_info'] = f"笛卡尔积: {' | '.join(c[:20] for c in combo)}"
+                    requests.append(req)
         
         return requests
     
@@ -250,6 +293,15 @@ class IntruderWorker(QThread):
         headers = req_data['headers']
         body = req_data['body']
         
+        # 构建请求字符串用于显示
+        request_lines = [f"{method} {url} HTTP/1.1"]
+        for k, v in headers.items():
+            request_lines.append(f"{k}: {v}")
+        if body:
+            request_lines.append("")
+            request_lines.append(body if isinstance(body, str) else body.decode('utf-8', errors='replace'))
+        request_str = "\n".join(request_lines)
+        
         try:
             async with httpx.AsyncClient(verify=False, timeout=30, follow_redirects=True) as client:
                 request_kwargs = {'headers': headers}
@@ -272,14 +324,28 @@ class IntruderWorker(QThread):
                 else:
                     response = await client.request(method, url, **request_kwargs)
                 
+                # 构建响应头字符串
+                response_headers = "\n".join([f"{k}: {v}" for k, v in response.headers.items()])
+                
                 return {
                     'status_code': response.status_code,
                     'length': len(response.content),
                     'body': response.text,
+                    'body_bytes': response.content,
+                    'headers': response_headers,
+                    'request': request_str,  # 添加请求数据
                     'error': ''
                 }
         except Exception as e:
-            return {'status_code': 0, 'length': 0, 'body': '', 'error': str(e)}
+            return {
+                'status_code': 0, 
+                'length': 0, 
+                'body': '', 
+                'body_bytes': b'',
+                'headers': '',
+                'request': request_str,  # 即使失败也返回请求
+                'error': str(e)
+            }
 
 
 class IntruderWidget(QWidget):
@@ -304,15 +370,24 @@ class IntruderWidget(QWidget):
         
         top_layout.addWidget(QLabel("攻击模式:"))
         self.attack_mode = QComboBox()
-        # 汉化攻击模式
+        # 汉化攻击模式，添加详细说明
         self.attack_mode.addItems([
-            "Sniper (狙击手 - 单点爆破)",
-            "Battering Ram (攻城锤 - 全部替换)",
-            "Pitchfork (草叉 - 一一对应)",
+            "Sniper (狙击手 - 单payload逐位置测试)",
+            "Battering Ram (攻城锤 - 单payload全位置)",
+            "Pitchfork (草叉 - 多集合一一对应)",
             "Cluster Bomb (集束炸弹 - 笛卡尔积)"
         ])
+        self.attack_mode.setToolTip(
+            "攻击模式说明:\n"
+            "• Sniper: 使用单个payload集合，逐个位置依次测试\n"
+            "• Battering Ram: 使用单个payload集合，同时替换所有位置\n"
+            "• Pitchfork: 多个payload集合一一对应 (集合1→位置1, 集合2→位置2)\n"
+            "  例如: 集合1有3个元素，集合2有2个元素，则执行min(3,2)=2次请求\n"
+            "• Cluster Bomb: 笛卡尔积模式，所有集合的所有组合\n"
+            "  例如: 集合1有3个元素，集合2有2个元素，则执行3×2=6次请求"
+        )
         self.attack_mode.currentIndexChanged.connect(self._on_mode_changed)
-        self.attack_mode.setMinimumWidth(280)
+        self.attack_mode.setMinimumWidth(320)
         top_layout.addWidget(self.attack_mode)
         
         top_layout.addWidget(QLabel("线程:"))
@@ -668,6 +743,9 @@ class IntruderWidget(QWidget):
         self.results_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.results_table.setStyle(_NoFocusStyle(self.results_table.style()))
         self.results_table.itemClicked.connect(self._show_result_detail)
+        
+        # 【新增】启用排序功能
+        self.results_table.setSortingEnabled(True)
         self.results_table.setStyleSheet(f"""
             QTableWidget {{
                 background-color: {COLORS['bg_secondary']};
@@ -695,8 +773,8 @@ class IntruderWidget(QWidget):
         results_layout.addWidget(self.results_table)
         results_detail_splitter.addWidget(results_group)
         
-        # 结果详情区域
-        detail_group = QGroupBox("响应详情")
+        # 结果详情区域 - 使用TabWidget分割请求和响应
+        detail_group = QGroupBox("详情")
         detail_group.setStyleSheet(f"""
             QGroupBox {{
                 font-weight: bold;
@@ -735,13 +813,37 @@ class IntruderWidget(QWidget):
         
         detail_layout.addLayout(info_h_layout)
         
-        # 响应内容
-        self.detail_text = QPlainTextEdit()
-        self.detail_text.setReadOnly(True)
-        self.detail_text.setFont(QFont("Consolas", 10))
-        self.detail_text.setPlaceholderText("点击结果查看响应...")
-        self.highlighter_detail = HTTPHighlighter(self.detail_text.document(), is_request=False)
-        detail_layout.addWidget(self.detail_text)
+        # 请求/响应Tab
+        self.detail_tabs = QTabWidget()
+        
+        # 请求Tab
+        self.request_text = QPlainTextEdit()
+        self.request_text.setReadOnly(True)
+        self.request_text.setFont(QFont("Consolas", 10))
+        self.request_text.setPlaceholderText("点击结果查看请求...")
+        self.highlighter_request = HTTPHighlighter(self.request_text.document(), is_request=True)
+        self.detail_tabs.addTab(self.request_text, "请求")
+        
+        # 响应Tab - 【新增】使用ResponseViewerWidget支持Render视图
+        try:
+            from .response_viewer import ResponseViewerWidget
+            self.response_viewer = ResponseViewerWidget()
+            self.detail_tabs.addTab(self.response_viewer, "响应")
+            # 保留引用用于兼容
+            self.response_text = self.response_viewer.raw_view
+        except ImportError:
+            # 回退到纯文本视图
+            self.response_text = QPlainTextEdit()
+            self.response_text.setReadOnly(True)
+            self.response_text.setFont(QFont("Consolas", 10))
+            self.response_text.setPlaceholderText("点击结果查看响应...")
+            self.highlighter_response = HTTPHighlighter(self.response_text.document(), is_request=False)
+            self.detail_tabs.addTab(self.response_text, "响应")
+        
+        detail_layout.addWidget(self.detail_tabs)
+        
+        # 保留旧的detail_text用于兼容
+        self.detail_text = self.response_text
         
         results_detail_splitter.addWidget(detail_group)
         
@@ -845,19 +947,25 @@ class IntruderWidget(QWidget):
         return method, url, headers, body
     
     def _start_attack(self):
+        # 先保存当前输入框中的payload到当前集合
         payloads_text = self.payload_input.toPlainText().strip()
-        if not payloads_text:
+        if payloads_text:
+            payloads = [p.strip() for p in payloads_text.split('\n') if p.strip()]
+            idx = self.payload_set_combo.currentIndex()
+            if idx >= 0:
+                self.payload_sets[idx] = payloads
+        
+        # 检查是否有任何payload集合
+        total_payloads = sum(len(ps) for ps in self.payload_sets)
+        if total_payloads == 0:
             QMessageBox.warning(self, "警告", "请输入payload")
             return
         
-        payloads = [p.strip() for p in payloads_text.split('\n') if p.strip()]
-        if not payloads:
-            QMessageBox.warning(self, "警告", "没有有效的payload")
-            return
-        
-        idx = self.payload_set_combo.currentIndex()
-        if idx >= 0:
-            self.payload_sets[idx] = payloads
+        # 检查每个集合是否为空
+        for i, ps in enumerate(self.payload_sets):
+            if not ps:
+                QMessageBox.warning(self, "警告", f"Payload集合 {i+1} 为空")
+                return
         
         req_text = self.req_edit.toPlainText()
         method, url, headers, body = self._parse_request(req_text)
@@ -880,9 +988,10 @@ class IntruderWidget(QWidget):
         
         base_request = {'url': url, 'method': method, 'headers': headers, 'body': body}
         
+        # 【关键修复】传递所有payload集合，而不仅仅是当前选中的
         self.worker = IntruderWorker(
             base_request=base_request,
-            payloads=[payloads],
+            payloads=self.payload_sets,  # 使用所有集合
             attack_mode=self.current_mode,
             threads=self.thread_spin.value()
         )
@@ -912,14 +1021,15 @@ class IntruderWidget(QWidget):
         row = self.results_table.rowCount()
         self.results_table.insertRow(row)
         
-        self.results_table.setItem(row, 0, QTableWidgetItem(str(result['index'] + 1)))
+        # 【修复】使用SortableTableWidgetItem以支持排序
+        self.results_table.setItem(row, 0, SortableTableWidgetItem(str(result['index'] + 1)))
         
-        payload_item = QTableWidgetItem(result['payload'])
+        payload_item = SortableTableWidgetItem(result['payload'])
         payload_item.setToolTip(result['payload'])
         self.results_table.setItem(row, 1, payload_item)
         
         status_code = result['status_code']
-        status_item = QTableWidgetItem(str(status_code))
+        status_item = SortableTableWidgetItem(str(status_code))
         if 200 <= status_code < 300:
             status_item.setForeground(QColor(COLORS['success']))
         elif 300 <= status_code < 400:
@@ -928,7 +1038,9 @@ class IntruderWidget(QWidget):
             status_item.setForeground(QColor(COLORS['danger']))
         self.results_table.setItem(row, 2, status_item)
         
-        self.results_table.setItem(row, 3, QTableWidgetItem(str(result['length'])))
+        # 【修复】使用SortableTableWidgetItem以支持排序
+        length_item = SortableTableWidgetItem(str(result['length']))
+        self.results_table.setItem(row, 3, length_item)
         
         # 修复 TypeError: 'NoneType' object is not subscriptable
         error = result.get('error', '') or ''
@@ -940,7 +1052,8 @@ class IntruderWidget(QWidget):
         # 存储完整结果数据
         status_item.setData(Qt.UserRole, result)
         
-        self.results_table.scrollToBottom()
+        # 排序后滚动到底部可能不适合，改为选择当前行
+        self.results_table.selectRow(row)
     
     def _on_progress(self, current: int, total: int):
         self.progress_bar.setMaximum(total)
@@ -970,6 +1083,30 @@ class IntruderWidget(QWidget):
                 self.detail_status.setText(f"状态码: {result['status_code']}")
                 self.detail_length.setText(f"长度: {result['length']} bytes")
                 self.detail_payload.setText(f"Payload: {result['payload']}")
+                
+                # 显示请求
+                request_str = result.get('request', '')
+                self.request_text.setPlainText(request_str)
+                
+                # 【新增】使用ResponseViewerWidget显示响应（支持Render视图）
+                if hasattr(self, 'response_viewer'):
+                    # 使用ResponseViewerWidget显示完整响应
+                    response_dict = {
+                        'status_code': result.get('status_code', 0),
+                        'headers': result.get('headers', ''),
+                        'body': result.get('body', ''),
+                        'body_bytes': result.get('body_bytes', b''),
+                        'url': ''  # 可以从request中提取URL
+                    }
+                    self.response_viewer.set_response_from_dict(response_dict)
+                else:
+                    # 回退到纯文本视图
+                    headers = result.get('headers', '')
+                    body = result.get('body', '')
+                    response_str = f"HTTP/1.1 {result['status_code']}\n{headers}\n\n{body}"
+                    self.response_text.setPlainText(response_str)
+                
+                # 兼容旧的detail_text
                 self.detail_text.setPlainText(result.get('body', ''))
     
     def load_request(self, request_data: dict):

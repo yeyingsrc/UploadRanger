@@ -21,7 +21,7 @@ class AsyncScannerWorker(QThread):
     traffic_log = Signal(TrafficLog)  # 流量日志
     progress_update = Signal(int, str)  # 进度百分比和消息
     
-    def __init__(self, target_url, file_param, upload_dir, proxies, headers, cookies):
+    def __init__(self, target_url, file_param, upload_dir, proxies, headers, cookies, max_payloads=None):
         super().__init__()
         self.target_url = target_url
         self.file_param = file_param
@@ -29,6 +29,7 @@ class AsyncScannerWorker(QThread):
         self.proxies = proxies
         self.headers = headers
         self.cookies = cookies
+        self.max_payloads = max_payloads  # 【新增】保存Payload数量限制
         self.scanner = AsyncScanner()
     
     def _on_log(self, message: str):
@@ -75,7 +76,8 @@ class AsyncScannerWorker(QThread):
                 on_traffic_callback=self._on_traffic,
                 on_finding_callback=self._on_finding,
                 on_result_callback=self._on_result,  # 新增：结果回调
-                progress_callback=self._on_progress
+                progress_callback=self._on_progress,
+                max_payloads=self.max_payloads  # 【新增】传递Payload数量限制
             ))
             self.finished.emit(result)
         except Exception as e:

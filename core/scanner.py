@@ -17,6 +17,7 @@ try:
     from ..payloads.webshells import WebShellGenerator
     from ..payloads.bypass_payloads import BypassPayloadGenerator
     from ..payloads.polyglots import PolyglotGenerator
+    from ..payloads.intruder_payloads import PayloadFactory, FuzzConfig, generate_intruder_payloads
 except ImportError:
     from core.http_client import HTTPClient
     from core.form_parser import FormParser
@@ -24,6 +25,7 @@ except ImportError:
     from payloads.webshells import WebShellGenerator
     from payloads.bypass_payloads import BypassPayloadGenerator
     from payloads.polyglots import PolyglotGenerator
+    from payloads.intruder_payloads import PayloadFactory, FuzzConfig, generate_intruder_payloads
 
 
 class UploadScanner:
@@ -44,6 +46,9 @@ class UploadScanner:
         self.shell_generator = WebShellGenerator()
         self.bypass_generator = BypassPayloadGenerator()
         self.polyglot_generator = PolyglotGenerator()
+        
+        # 新增: Intruder Payload Factory (高级payload引擎)
+        self.intruder_factory = PayloadFactory()
         
         # 设置认证信息
         if cookies:
@@ -113,8 +118,8 @@ class UploadScanner:
         # 测试基础上传
         self._update_progress(f"测试表单: {action}", None)
         
-        # 生成测试payloads
-        payloads = self._generate_test_payloads(test_config)
+        # 生成测试payloads (传入form_info用于生成intruder payloads)
+        payloads = self._generate_test_payloads(test_config, form_info=form_info)
         
         total = len(payloads)
         for i, payload in enumerate(payloads):
@@ -154,8 +159,16 @@ class UploadScanner:
         
         return results
     
-    def _generate_test_payloads(self, test_config):
-        """生成测试payloads"""
+    def _generate_test_payloads(self, test_config, form_info=None):
+        """生成测试payloads
+        
+        Args:
+            test_config: 测试配置字典
+            form_info: 表单信息 (用于生成multipart模板)
+        
+        Returns:
+            List[Dict]: payload列表
+        """
         payloads = []
         
         extensions = test_config.get("test_extensions", [".php"])
@@ -169,7 +182,7 @@ class UploadScanner:
                 "description": f"基础{ext}测试"
             })
         
-        # 绕过技术payloads
+        # 绕过技术payloads (使用原有的bypass_generator)
         if test_config.get("test_bypass", True):
             for ext in extensions:
                 bypass_payloads = self.bypass_generator.generate_all_payloads(
@@ -184,6 +197,23 @@ class UploadScanner:
                         "technique": bp.get("technique", "unknown"),
                         "severity": bp.get("severity", "中")
                     })
+        
+        # 新增: 使用Intruder Payload Factory生成高级payloads
+        if test_config.get("use_intruder_payloads", True) and form_info:
+            try:
+                # 构建multipart模板
+                template = self._build_multipart_template(form_info)
+                if template:
+                    # 生成intruder payloads
+                    intruder_payloads = self.intruder_factory.generate_payloads(template)
+                    
+                    # 【修复】增加Intruder payloads数量限制
+                    for payload_template in intruder_payloads[:500]:  # 从100增加到500
+                        parsed = self._parse_intruder_payload(payload_template)
+                        if parsed:
+                            payloads.append(parsed)
+            except Exception as e:
+                print(f"生成Intruder payloads失败: {e}")
         
         # Polyglot payloads
         if test_config.get("test_polyglots", True):
@@ -218,6 +248,100 @@ class UploadScanner:
                     })
         
         return payloads
+    
+    def _build_multipart_template(self, form_info):
+        """【修复】构建完整的multipart/form-data HTTP请求模板
+        
+        Args:
+            form_info: 表单信息字典
+        
+        Returns:
+            str: 完整HTTP请求模板字符串（包含请求行和Host头部）
+        """
+        if not form_info:
+            return None
+        
+        action = form_info.get("action", self.target_url)
+        file_fields = form_info.get("file_fields", [])
+        other_fields = form_info.get("other_fields", {})
+        
+        if not file_fields:
+            return None
+        
+        # 解析URL获取路径和Host
+        from urllib.parse import urlparse
+        parsed = urlparse(action)
+        host = parsed.netloc or parsed.hostname or 'localhost'
+        path = parsed.path or '/'
+        if parsed.query:
+            path += '?' + parsed.query
+        
+        # 构建简单的multipart模板
+        boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW"
+        file_field = file_fields[0]["name"]
+        
+        # 【修复】构建完整的HTTP请求，包含请求行和必要头部
+        template = f"""POST {path} HTTP/1.1
+Host: {host}
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
+Accept-Language: zh-CN,zh;q=0.9,en;q=0.8
+Accept-Encoding: gzip, deflate
+Content-Type: multipart/form-data; boundary={boundary}
+Connection: keep-alive
+
+--{boundary}
+Content-Disposition: form-data; name="{file_field}"; filename="test.jpg"
+Content-Type: image/jpeg
+
+[binary content]
+"""
+        # 添加其他表单字段
+        for field_name, field_value in other_fields.items():
+            template += f"""--{boundary}
+Content-Disposition: form-data; name="{field_name}"
+
+{field_value}
+"""
+        
+        template += f"--{boundary}--\n"
+        
+        return template
+    
+    def _parse_intruder_payload(self, payload_template):
+        """解析intruder payload模板
+        
+        Args:
+            payload_template: HTTP请求模板字符串
+        
+        Returns:
+            Dict: 解析后的payload字典
+        """
+        import re
+        
+        # 提取filename
+        filename_match = re.search(r'filename="([^"]+)"', payload_template)
+        if not filename_match:
+            return None
+        
+        filename = filename_match.group(1)
+        
+        # 提取Content-Type
+        ct_match = re.search(r'Content-Type:\s*([^\r\n]+)', payload_template)
+        content_type = ct_match.group(1).strip() if ct_match else "application/octet-stream"
+        
+        # 提取content (简化处理)
+        content_match = re.search(r'Content-Type:[^\r\n]*\r\n\r\n(.*?)(?:\r\n--|\Z)', payload_template, re.DOTALL)
+        content = content_match.group(1).encode() if content_match else b"<?php echo 'test'; ?>"
+        
+        return {
+            "filename": filename,
+            "content": content,
+            "content_type": content_type,
+            "description": "Intruder高级绕过",
+            "technique": "intruder",
+            "severity": "高"
+        }
     
     def _test_upload(self, url, field_name, payload, other_fields):
         """测试单个上传"""

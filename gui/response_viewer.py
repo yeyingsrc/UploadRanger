@@ -14,9 +14,9 @@ except Exception:
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget, QPlainTextEdit,
     QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QApplication,
-    QStyledItemDelegate, QProxyStyle, QStyle
+    QStyledItemDelegate, QProxyStyle, QStyle, QScrollArea
 )
-from PySide6.QtGui import QFont, QKeySequence
+from PySide6.QtGui import QFont, QKeySequence, QPixmap
 from PySide6.QtCore import Qt, QUrl
 
 from .syntax_highlighter import HTTPHighlighter
@@ -153,6 +153,17 @@ class ResponseViewerWidget(QWidget):
             self.render_placeholder.setAlignment(Qt.AlignCenter)
             self.tabs.addTab(self.render_placeholder, "Render")
 
+        # ========== Image 视图 ==========
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(True)
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignCenter)
+        self.image_label.setStyleSheet("QLabel { background-color: #2d2d2d; }")
+        self.image_label.setText("非图片响应")
+        self.image_label.setMinimumSize(400, 300)
+        self.image_scroll.setWidget(self.image_label)
+        self.tabs.addTab(self.image_scroll, "Image")
+
         self.hex_table = _HexTable()
         self.hex_table.setColumnCount(3)
         self.hex_table.setHorizontalHeaderLabels(["Offset", "Hex", "ASCII"])
@@ -244,17 +255,36 @@ class ResponseViewerWidget(QWidget):
 
         if WEBENGINE_AVAILABLE and self.render_view and not truncated:
             try:
-                if "html" in content_type.lower() and not is_binary:
+                # 【修复】更宽泛的HTML检测 - 检查Content-Type或HTML标签特征
+                is_html_content = (
+                    "html" in content_type.lower() or 
+                    "xhtml" in content_type.lower() or
+                    "text/plain" in content_type.lower()  # 有些HTML返回text/plain
+                )
+                
+                # 【修复】检测body_text是否包含HTML标签特征
+                if not is_html_content and not is_binary:
+                    html_tags = ['<html', '<body', '<div', '<script', '<style', '<head', '<p>', '<a ', '<img', '<form']
+                    body_lower = body_text[:1000].lower()
+                    is_html_content = any(tag in body_lower for tag in html_tags)
+                
+                if is_html_content and not is_binary:
+                    # 【修复】确保HTML有基础结构
+                    html_to_render = self._ensure_html_structure(body_text)
                     url = QUrl(base_url) if base_url else QUrl("about:blank")
-                    self.render_view.setHtml(body_text, baseUrl=url)
+                    self.render_view.setHtml(html_to_render, baseUrl=url)
                 else:
                     self.render_view.setHtml("<html><body><p>Render not available for this content.</p></body></html>")
-            except Exception:
-                pass
+            except Exception as e:
+                # 【修复】显示错误信息而不是空白
+                self.render_view.setHtml(f"<html><body><p>Render error: {str(e)}</p></body></html>")
 
         hex_bytes = display_bytes[: self._max_hex_bytes]
         rows = self._generate_hex_rows(hex_bytes)
         self._fill_hex_table(rows, truncated=(len(display_bytes) > self._max_hex_bytes))
+
+        # ========== 设置 Image 视图 ==========
+        self._load_image(display_bytes, content_type, truncated)
 
     def set_response_from_dict(self, result: dict):
         status_code = result.get('status_code', 0)
@@ -262,6 +292,7 @@ class ResponseViewerWidget(QWidget):
         body = result.get('body', '')
         body_bytes = result.get('body_bytes', None)
         url = result.get('url', None)
+        analysis = result.get('analysis', {})
         if body_bytes is None:
             body_bytes = body.encode('utf-8') if isinstance(body, str) else body
 
@@ -272,7 +303,55 @@ class ResponseViewerWidget(QWidget):
                 break
 
         headers_text = f"HTTP/1.1 {status_code}\n{headers}"
+        
+        # 如果有分析结果，添加到Raw视图顶部
+        if analysis:
+            analysis_info = self._format_analysis_info(analysis)
+            if analysis_info:
+                headers_text = f"{analysis_info}\n{'='*60}\n{headers_text}"
+        
         self.set_response(headers_text, body_bytes, content_type, base_url=url)
+    
+    def _format_analysis_info(self, analysis: dict) -> str:
+        """格式化分析结果信息"""
+        lines = []
+        
+        # 上传状态
+        is_success = analysis.get('is_success', False)
+        is_failure = analysis.get('is_failure', False)
+        if is_success:
+            lines.append("[分析结果] 上传成功 ✓")
+        elif is_failure:
+            lines.append("[分析结果] 上传失败 ✗")
+        else:
+            lines.append("[分析结果] 状态未知 ?")
+        
+        # 主要消息
+        message = analysis.get('message', '')
+        if message:
+            lines.append(f"[消息] {message}")
+        
+        # 上传路径
+        uploaded_path = analysis.get('uploaded_path', '')
+        if uploaded_path:
+            lines.append(f"[上传路径] {uploaded_path}")
+        
+        # 错误消息
+        error_msgs = analysis.get('error_messages', [])
+        if error_msgs:
+            lines.append(f"[错误提示] {' | '.join(error_msgs[:3])}")
+        
+        # 成功消息
+        success_msgs = analysis.get('success_messages', [])
+        if success_msgs:
+            lines.append(f"[成功提示] {' | '.join(success_msgs[:3])}")
+        
+        # 隐藏指示器
+        hidden = analysis.get('hidden_indicators', [])
+        if hidden:
+            lines.append(f"[隐藏提示] {' | '.join(hidden[:2])}")
+        
+        return '\n'.join(lines) if lines else ''
 
     def _format_pretty(self, text: str, content_type: str) -> str:
         if 'json' in content_type:
@@ -329,6 +408,88 @@ class ResponseViewerWidget(QWidget):
             self.hex_table.setItem(row, 0, QTableWidgetItem(""))
             self.hex_table.setItem(row, 1, QTableWidgetItem(f"[truncated to {self._max_hex_bytes} bytes for display]"))
             self.hex_table.setItem(row, 2, QTableWidgetItem(""))
+
+    def _ensure_html_structure(self, html: str) -> str:
+        """【新增】确保HTML内容有完整的基础结构"""
+        html = html.strip()
+        if not html:
+            return "<html><body></body></html>"
+        
+        # 如果已经有完整的HTML结构，直接返回
+        if html.lower().startswith('<!doctype'):
+            return html
+        if html.lower().startswith('<html'):
+            return html
+        
+        # 缺少基础结构，添加<html><body>包装
+        # 保留原有的meta charset以避免乱码
+        has_charset = 'charset' in html.lower()
+        head = '<head><meta charset="UTF-8"></head>' if not has_charset else ''
+        
+        return f"<!DOCTYPE html><html>{head}<body>{html}</body></html>"
+
+    def _load_image(self, body_bytes: bytes, content_type: str, truncated: bool = False):
+        """加载图片马等 Polyglot 载荷"""
+        pixmap = QPixmap()
+
+        # 根据Content-Type判断是否可能是图片
+        is_likely_image = False
+        if content_type:
+            content_type_lower = content_type.lower()
+            if content_type_lower.startswith('image/'):
+                is_likely_image = True
+
+        # 尝试从字节流加载
+        if not truncated and pixmap.loadFromData(body_bytes):
+            # 自动适应窗口大小，保持比例
+            scaled_pixmap = pixmap.scaled(
+                800, 600,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            self.image_label.setPixmap(scaled_pixmap)
+            self.image_label.setText("")
+            self.image_label.setStyleSheet("QLabel { background-color: #2d2d2d; }")
+        else:
+            # 检查文件头
+            image_formats = [
+                (b'\x89PNG\r\n\x1a\n', 'PNG'),
+                (b'\xFF\xD8\xFF', 'JPEG'),
+                (b'GIF87a', 'GIF'),
+                (b'GIF89a', 'GIF'),
+                (b'RIFF', 'WEBP'),
+                (b'BM', 'BMP'),
+                (b'%PDF', 'PDF'),
+            ]
+
+            detected_format = None
+            for magic, fmt in image_formats:
+                if body_bytes.startswith(magic):
+                    detected_format = fmt
+                    break
+
+            if detected_format:
+                info_text = f"检测到 {detected_format} 格式，但无法显示"
+                if truncated:
+                    info_text += f"\n(内容被截断，仅显示前 {self._max_bytes} bytes)"
+                else:
+                    info_text += f"\n(大小: {len(body_bytes)} bytes)"
+                self.image_label.setText(info_text)
+                self.image_label.setStyleSheet("color: #f0ad4e; padding: 20px; text-align: center; background-color: #2d2d2d;")
+            elif is_likely_image:
+                info_text = f"无法加载图片"
+                if truncated:
+                    info_text += f"\n(内容被截断，仅显示前 {self._max_bytes} bytes)"
+                else:
+                    info_text += f"\n(Content-Type: {content_type}, 大小: {len(body_bytes)} bytes)"
+                self.image_label.setText(info_text)
+                self.image_label.setStyleSheet("color: #f0ad4e; padding: 20px; background-color: #2d2d2d;")
+            else:
+                self.image_label.setText("非图片响应")
+                self.image_label.setStyleSheet("color: #888; background-color: #2d2d2d;")
+
+            self.image_label.setPixmap(QPixmap())
+
     def clear(self):
         self.raw_view.clear()
         self.pretty_view.clear()

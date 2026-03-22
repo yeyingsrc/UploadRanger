@@ -24,15 +24,19 @@ from .themes.dark_theme import COLORS
 from .syntax_highlighter import HTTPHighlighter
 from core.config_manager import ConfigManager
 
-# 尝试导入 mitmproxy
+# 尝试导入 mitmproxy（失败多为「运行 main 的 python」与 pip 安装到的解释器不一致）
 try:
     from mitmproxy import http
     from mitmproxy.tools.dump import DumpMaster
     from mitmproxy import options
     MITMPROXY_AVAILABLE = True
-except ImportError:
+except ImportError as e:
     MITMPROXY_AVAILABLE = False
-    print("警告: mitmproxy 未安装，代理功能将不可用")
+    import sys
+    print("警告: mitmproxy 无法导入，代理功能将不可用。")
+    print(f"      原因: {e!r}")
+    print(f"      当前 Python: {sys.executable}")
+    print("      请用同一解释器安装: python -m pip install mitmproxy")
 
 
 class ProxySignals(QObject):
@@ -144,10 +148,10 @@ class UploadRangerAddon:
             self.waiting_flows[flow_id] = (flow, None, intercepted)
     
     async def _wait_for_action(self, flow_id: str, event: asyncio.Event):
-        """等待用户操作 - 异步等待，不阻塞事件循环"""
+        """【优化】等待用户操作 - 立即响应，快速清理"""
         try:
-            # 【优化】减少超时时间到60秒，提高响应速度
-            await asyncio.wait_for(event.wait(), timeout=60)
+            # 【优化】减少超时时间到30秒，提高响应速度
+            await asyncio.wait_for(event.wait(), timeout=30)
         except asyncio.TimeoutError:
             # 超时后自动放行
             if flow_id in self.waiting_flows:
@@ -157,8 +161,7 @@ class UploadRangerAddon:
                 except Exception:
                     pass
                 intercepted.released = True
-                if flow_id in self.waiting_flows:
-                    del self.waiting_flows[flow_id]
+                print(f"Request {flow_id} timeout, auto-released")
         except asyncio.CancelledError:
             # 任务被取消，清理
             if flow_id in self.waiting_flows:
@@ -168,11 +171,10 @@ class UploadRangerAddon:
                 except Exception:
                     pass
                 intercepted.released = True
-                del self.waiting_flows[flow_id]
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Error in _wait_for_action for {flow_id}: {e}")
         finally:
-            # 清理
+            # 【关键修复】确保清理
             if flow_id in self.waiting_flows:
                 del self.waiting_flows[flow_id]
     
@@ -182,29 +184,38 @@ class UploadRangerAddon:
         self.waiting_flows.clear()
     
     def handle_action(self, flow_id: str, action: str, modified_content: bytes = None):
-        """处理用户操作 - 由 GUI 线程调用"""
+        """【优化】处理用户操作 - 立即触发异步事件"""
         if flow_id not in self.waiting_flows:
             return
         
         flow, event, intercepted = self.waiting_flows[flow_id]
         
-        if action == "forward":
-            # 如果提供了修改后的内容
-            if modified_content is not None:
-                flow.request.content = modified_content
-                flow.request.headers["Content-Length"] = str(len(modified_content))
-                intercepted.modified = True
-            # 【关键】调用 resume() 放行，而不是 kill()
-            flow.resume()
-            intercepted.released = True
-        elif action == "drop":
-            flow.kill()
-            intercepted.dropped = True
-            intercepted.released = True
-        
-        # 唤醒等待的协程
-        if event:
-            event.set()
+        try:
+            if action == "forward":
+                # 如果提供了修改后的内容
+                if modified_content is not None:
+                    flow.request.content = modified_content
+                    flow.request.headers["Content-Length"] = str(len(modified_content))
+                    intercepted.modified = True
+                # 【关键】调用 resume() 放行，而不是 kill()
+                flow.resume()
+                intercepted.released = True
+            elif action == "drop":
+                flow.kill()
+                intercepted.dropped = True
+                intercepted.released = True
+            
+            # 【关键修复】立即唤醒等待的协程
+            if event and not event.is_set():
+                event.set()
+                
+                # 【额外保障】确保任务被唤醒后从等待列表中移除
+                # 注意：不要在这里立即删除，让 _wait_for_action 清理
+        except Exception as e:
+            print(f"Error in handle_action: {e}")
+            # 出错时也要唤醒协程，避免永久阻塞
+            if event and not event.is_set():
+                event.set()
     
     def response(self, flow):
         """处理响应 - 优化响应处理速度"""
@@ -966,12 +977,18 @@ class ProxyHistoryTab(QWidget):
     
     def _on_context_menu(self, pos):
         """右键菜单"""
+        row = self.history_table.indexAt(pos).row()
+        if row >= 0:
+            self.history_table.selectRow(row)
+        
         menu = QMenu(self)
         
         send_rep_action = menu.addAction("发送到 Repeater")
         send_int_action = menu.addAction("发送到 Intruder")
         menu.addSeparator()
         clear_action = menu.addAction("清空历史记录")
+        send_rep_action.setEnabled(row >= 0)
+        send_int_action.setEnabled(row >= 0)
         
         action = menu.exec(self.history_table.mapToGlobal(pos))
         
@@ -1513,6 +1530,13 @@ class ProxyInterceptTab(QWidget):
     
     def _on_context_menu(self, pos):
         """右键菜单"""
+        row = self.intercept_table.indexAt(pos).row()
+        if row >= 0:
+            self.intercept_table.selectRow(row)
+            item = self.intercept_table.item(row, 0)
+            if item:
+                self._on_item_selected(item)
+        
         menu = QMenu(self)
         
         send_rep_action = menu.addAction("发送到 Repeater")
@@ -1520,6 +1544,10 @@ class ProxyInterceptTab(QWidget):
         menu.addSeparator()
         forward_action = menu.addAction("放行 (Forward)")
         drop_action = menu.addAction("丢弃 (Drop)")
+        send_rep_action.setEnabled(row >= 0)
+        send_int_action.setEnabled(row >= 0)
+        forward_action.setEnabled(row >= 0)
+        drop_action.setEnabled(row >= 0)
         
         action = menu.exec(self.intercept_table.mapToGlobal(pos))
         
@@ -1623,34 +1651,60 @@ class ProxyInterceptTab(QWidget):
                 self.forward_all_btn.setEnabled(False)
     
     def _forward_all(self):
-        """【新增】放行所有拦截的请求"""
+        """【优化】放行所有拦截的请求 - 使用批量异步处理"""
         if not self.proxy_thread:
             return
         
         # 复制列表避免遍历时修改
         flows_to_forward = [f for f in self.intercepted_list if not f.released]
         
+        if not flows_to_forward:
+            return
+        
+        # 【关键修复】批量放行所有请求，立即设置 released 标志
         for intercepted in flows_to_forward:
-            # 获取当前行
-            row = -1
-            for i, f in enumerate(self.intercepted_list):
-                if f.id == intercepted.id:
-                    row = i
-                    break
-            
-            if row >= 0:
-                # 使用原始内容直接放行
-                self.proxy_thread.forward_request(intercepted.id, None)
-                intercepted.released = True
-                self.intercept_table.removeRow(row)
-                self.intercepted_list.pop(row)
+            intercepted.released = True  # 立即标记为已释放，避免重复处理
+            # 使用原始内容直接放行
+            self.proxy_thread.forward_request(intercepted.id, None)
+        
+        # 【关键修复】延迟清理表格，给异步事件一些时间处理
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(100, self._clean_forwarded_flows)
+    
+    def _clean_forwarded_flows(self):
+        """【修复】清理已放行的流量 - 正确获取对象并比较ID"""
+        # 获取所有已释放的流量ID集合
+        released_ids = {f.id for f in self.intercepted_list if f.released}
+        
+        if not released_ids:
+            return
+        
+        # 从后向前删除，避免索引错乱
+        rows_to_remove = []
+        for row in range(self.intercept_table.rowCount() - 1, -1, -1):
+            item = self.intercept_table.item(row, 0)
+            if item:
+                # 【修复】Qt.UserRole 存储的是 InterceptedFlow 对象，不是ID字符串
+                flow_obj = item.data(Qt.UserRole)
+                if flow_obj and hasattr(flow_obj, 'id') and flow_obj.id in released_ids:
+                    rows_to_remove.append(row)
+        
+        # 删除标记的行
+        for row in rows_to_remove:
+            self.intercept_table.removeRow(row)
+        
+        # 【修复】更新列表 - 只保留未释放的
+        self.intercepted_list = [f for f in self.intercepted_list if not f.released]
         
         # 清空编辑区
         self.request_edit.clear()
         self.current_flow_id = None
         self.forward_btn.setEnabled(False)
         self.drop_btn.setEnabled(False)
-        self.forward_all_btn.setEnabled(False)
+        
+        # 【修复】只有当还有未释放的请求时才禁用放行全部按钮
+        has_unreleased = any(not f.released for f in self.intercepted_list)
+        self.forward_all_btn.setEnabled(has_unreleased)
     
     def clear_intercepted(self):
         """【新增】清空所有拦截的请求"""

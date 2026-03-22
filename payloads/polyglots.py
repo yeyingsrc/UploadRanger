@@ -143,17 +143,16 @@ class PolyglotGenerator:
         
         php_bytes = php_code.encode('utf-8')
         
-        # 添加注释使魔术字节不影响PHP执行
-        if image_type == "gif":
-            # GIF89a<?php ... ?>
-            data = magic_bytes[image_type] + b"<?php " + php_bytes + b" ?>"
-        elif image_type == "png":
-            # PNG需要更复杂的处理，简单添加魔术字节
-            data = magic_bytes[image_type] + b"<?php " + php_bytes + b" ?>"
-        elif image_type == "jpg":
-            data = magic_bytes[image_type] + b"<?php " + php_bytes + b" ?>"
+        # 【修复】检查用户输入是否已经包含 <?php 标签
+        # 如果已经包含，直接拼接；否则添加标签
+        has_php_tag = b'<?php' in php_bytes or b'<?=' in php_bytes
+        
+        if has_php_tag:
+            # 用户已包含PHP标签，直接拼接
+            data = magic_bytes[image_type] + php_bytes
         else:
-            data = magic_bytes[image_type] + b"\\n<?php " + php_bytes + b" ?>"
+            # 用户未包含PHP标签，添加标签
+            data = magic_bytes[image_type] + b"<?php " + php_bytes + b" ?>"
         
         if output_path:
             with open(output_path, 'wb') as f:

