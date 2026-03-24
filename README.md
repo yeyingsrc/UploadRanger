@@ -214,9 +214,9 @@ UploadRanger/
 - **lxml**: XML/HTML 解析
 - **Pillow**: 图像处理
 
-## 更新说明（v1.0.4）
+## 更新说明（v1.0.5）
 
-当前版本：**v1.0.4**（2026-03-22）。主要变更包括：扫描侧文件参数名下拉、Intruder 结果排序与 Render 视图、代理/Repeater 右键发送与响应分析优化、异步上传结果判定收紧、测试脚本合并为 `test_all.py`、mitmproxy 不可用时的 Python 路径提示等。**完整条目见 [CHANGELOG.md](CHANGELOG.md)。**
+当前版本：**v1.0.5**（2026-03-24）。本次重点升级“成功判定”链路：采用证据分层与冲突裁决，优先识别结构化 JSON 成功信号（如 `success=true`、`files` 非空），并适配服务端重命名文件名进行多候选验证；结果页新增判定原因与置信等级提示。**完整条目见 [CHANGELOG.md](CHANGELOG.md)。**
 
 ## 免责声明
 

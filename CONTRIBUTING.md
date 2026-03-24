@@ -55,7 +55,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/yourusername/UploadRanger.git
+git clone https://github.com/Gentle-bae/UploadRanger.git
 cd UploadRanger
 
 # 创建虚拟环境

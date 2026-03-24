@@ -6,6 +6,7 @@
 
 import asyncio
 import random
+from urllib.parse import quote, urljoin
 from typing import List, Optional, Callable
 from datetime import datetime
 
@@ -142,6 +143,32 @@ class AsyncScanner:
         # 分析上传响应
         analysis = self.analyzer.analyze_upload_response(response, actual_filename)
         
+        # 关键修复: 对 3xx 上传响应跟进一次重定向页面，再做二次判定
+        redirect_location = response.headers.get("location", "")
+        followed_redirect = False
+        if 300 <= response.status_code < 400 and redirect_location:
+            try:
+                redirect_url = urljoin(str(response.request.url), redirect_location)
+                redirect_resp = await engine.get(redirect_url)
+                redirect_analysis = self.analyzer.analyze_upload_response(redirect_resp, actual_filename)
+                followed_redirect = True
+                
+                # 合并判定：若重定向目标页更“成功”，采用其结果
+                better_success = redirect_analysis.get("is_success", False) and not analysis.get("is_success", False)
+                better_score = redirect_analysis.get("success_probability", 0) > analysis.get("success_probability", 0)
+                if better_success or better_score:
+                    merged_reasons = list(analysis.get("decision_reasons", []))
+                    merged_reasons.append(f"跟进重定向: {redirect_location}")
+                    merged_reasons.extend(redirect_analysis.get("decision_reasons", []))
+                    redirect_analysis["decision_reasons"] = merged_reasons[:10]
+                    analysis = redirect_analysis
+                    # 用重定向目标页补充路径信息
+                    if not analysis.get("path_leaked"):
+                        analysis["path_leaked"] = redirect_location
+            except Exception:
+                # 跟进失败不影响原始判定
+                pass
+        
         # 格式化请求头和响应头
         req_headers = "\n".join([f"{k}: {v}" for k, v in response.request.headers.items()])
         res_headers = "\n".join([f"{k}: {v}" for k, v in response.headers.items()])
@@ -157,34 +184,42 @@ class AsyncScanner:
             'success_probability': analysis['success_probability'],
             'path_leaked': analysis.get('path_leaked'),
             'response_length': analysis['length'],
+            'confidence_level': analysis.get('confidence_level', 'low'),
+            'decision_reasons': analysis.get('decision_reasons', []),
+            'server_filename': analysis.get('server_filename'),
+            'followed_redirect': followed_redirect,
             'is_vulnerability': False,
             'finding': None,
             'request_headers': req_headers,
             'response_headers': res_headers,
             'response_body': response.text  # 完整响应内容
         }
+        if followed_redirect:
+            extra = f"重定向跟进: {redirect_location}"
+            result['decision_reasons'] = (result.get('decision_reasons', []) + [extra])[:10]
         
         # 验证文件存在性
         verified_execution = False
         verified_upload = False
         verification_url = None
         
-        if upload_dir and analysis['is_success']:
+        should_verify = analysis['is_success'] or analysis['success_probability'] >= 55
+        if upload_dir and should_verify:
             base = upload_dir.rstrip("/")
-            
-            # 处理空字节截断
-            check_filename = actual_filename
-            if "%00" in actual_filename:
-                check_filename = actual_filename.split("%00")[0]
-            
-            verification_url = f"{base}/{check_filename}"
-            
-            try:
-                check_resp = await engine.check_file_existence(verification_url)
-                
-                if check_resp.status_code == 200:
+            candidates = analysis.get('verify_filenames') or [actual_filename]
+            for check_filename in candidates:
+                if not check_filename:
+                    continue
+                verification_url = f"{base}/{quote(check_filename, safe='/%._-')}"
+                try:
+                    check_resp = await engine.check_file_existence(verification_url)
+                    if check_resp.status_code != 200:
+                        continue
+                    
                     verified_upload = True
                     result['verified_upload'] = True
+                    result['path_leaked'] = result.get('path_leaked') or verification_url
+                    result['verification_url'] = verification_url
                     
                     # 检查代码执行
                     if b"UploadForge_Test_Success_" in content:
@@ -195,9 +230,11 @@ class AsyncScanner:
                     # 内容匹配确认
                     if check_resp.content == content:
                         verified_upload = True
-                        
-            except Exception as e:
-                pass
+                    
+                    # 命中一个可访问候选即停止
+                    break
+                except Exception:
+                    continue
         
         # 构造发现结果
         if verified_execution:

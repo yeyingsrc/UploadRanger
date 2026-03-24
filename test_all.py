@@ -585,7 +585,7 @@ def main():
     """主函数"""
     print(f"\n{Colors.BLUE}{'=' * 60}{Colors.RESET}")
     print(f"{Colors.BLUE}  UploadRanger 完整功能测试{Colors.RESET}")
-    print(f"{Colors.BLUE}  版本: 1.0.4{Colors.RESET}")
+    print(f"{Colors.BLUE}  版本: 1.0.5{Colors.RESET}")
     print(f"{Colors.BLUE}{'=' * 60}{Colors.RESET}")
     
     # 定义测试

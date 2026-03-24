@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-主窗口 - UploadRanger GUI主界面 v1.0.4
+主窗口 - UploadRanger GUI主界面 v1.0.5
 整合upload_forge功能，添加请求/响应查看、Repeater和Intruder功能
 """
 
@@ -136,6 +136,9 @@ class ResultsTable(QTableWidget):
         is_success = result.get('is_success', False)
         status_text = "成功" if is_success else "失败"
         status_text_item = QTableWidgetItem(status_text)
+        reasons = result.get('decision_reasons', []) or []
+        if reasons:
+            status_text_item.setToolTip("\n".join([f"- {r}" for r in reasons]))
         if is_success:
             status_text_item.setForeground(QColor(COLORS['success']))
         else:
@@ -151,6 +154,8 @@ class ResultsTable(QTableWidget):
             prob_item.setForeground(QColor(COLORS['warning']))
         else:
             prob_item.setForeground(QColor(COLORS['danger']))
+        confidence_level = result.get('confidence_level', 'low')
+        prob_item.setToolTip(f"置信度: {confidence_level}")
         self.setItem(row, 4, prob_item)
         
         # 路径
@@ -296,7 +301,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.4")
+        self.setWindowTitle("UploadRanger - 文件上传漏洞测试工具 v1.0.5")
         self.resize(1600, 1000)
         self.setMinimumSize(1400, 800)
         
@@ -389,7 +394,7 @@ class MainWindow(QMainWindow):
         self.github_btn.clicked.connect(self._open_github)
         header_layout.addWidget(self.github_btn)
         
-        version = QLabel("v1.0.4")
+        version = QLabel("v1.0.5")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; margin-right: 15px; margin-left: 10px;")
         header_layout.addWidget(version)
         
@@ -868,7 +873,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(title)
         
-        version = QLabel("版本 v1.0.4")
+        version = QLabel("版本 v1.0.5")
         version.setStyleSheet(f"color: {COLORS['text_secondary']}; font-size: 14px;")
         version.setAlignment(Qt.AlignCenter)
         container_layout.addWidget(version)
